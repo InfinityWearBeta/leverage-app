@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
-import '../services/api_service.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'login_screen.dart'; 
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -9,60 +12,111 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  final TextEditingController _benchmarkController = TextEditingController();
-  final TextEditingController _moduleController = TextEditingController();
-  
-  final ApiService _apiService = ApiService();
-  
-  bool _isLoading = false;
-  Map<String, dynamic>? _result;
+  bool _isLoading = true;
+  Map<String, dynamic>? _data;
+  String? _errorMessage;
 
-  // Funzione helper per convertire qualsiasi numero in Double in modo sicuro
-  // Questo impedisce crash se il server manda "10" (int) invece di "10.0" (double)
-  double _safeDouble(dynamic value) {
-    if (value == null) return 0.0;
-    if (value is int) return value.toDouble();
-    if (value is double) return value;
-    return 0.0;
+  @override
+  void initState() {
+    super.initState();
+    _fetchAndCalculate();
   }
 
-  Future<void> _calculateWealth() async {
-    // Nascondi la tastiera quando premi calcola
-    FocusScope.of(context).unfocus();
+  Future<void> _fetchAndCalculate() async {
+    print("--- INIZIO DEBUG DASHBOARD ---"); // DEBUG LOG
+    
+    final supabase = Supabase.instance.client;
+    final userId = supabase.auth.currentUser?.id;
 
-    final benchmark = double.tryParse(_benchmarkController.text.replaceAll(',', '.'));
-    final module = double.tryParse(_moduleController.text.replaceAll(',', '.'));
-
-    if (benchmark == null || module == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Inserisci dei numeri validi! Usa il punto per i decimali.")),
-      );
+    if (userId == null) {
+      print("ERRORE: Utente non loggato");
       return;
     }
 
-    setState(() {
-      _isLoading = true;
-      _result = null;
-    });
-
     try {
-      final response = await _apiService.calculateWealth(
-        benchmarkCost: benchmark,
-        moduleCost: module,
+      // 1. RECUPERA DATI DA SUPABASE
+      print("1. Recupero profilo da Supabase...");
+      final profile = await supabase.from('profiles').select().eq('id', userId).single();
+      print("   Profilo OK: ${profile['id']}");
+
+      print("2. Recupero vizio da Supabase...");
+      final habitResponse = await supabase.from('habits').select().eq('user_id', userId).limit(1);
+      
+      if (habitResponse.isEmpty) {
+        print("   ERRORE: Nessun vizio trovato.");
+        setState(() {
+          _errorMessage = "Nessun vizio trovato. Rifai l'onboarding.";
+          _isLoading = false;
+        });
+        return;
+      }
+      final habit = habitResponse[0];
+      print("   Vizio OK: ${habit['name']}");
+
+      // 2. PREPARA IL PACCHETTO
+      // Parsing sicuro della data
+      final birthDate = DateTime.parse(profile['birth_date']);
+      final age = DateTime.now().year - birthDate.year;
+
+      final Map<String, dynamic> payload = {
+        "age": age,
+        "gender": profile['gender'],
+        // Forziamo la conversione a double per sicurezza
+        "weight_kg": (profile['weight_kg'] as num).toDouble(),
+        "height_cm": (profile['height_cm'] as num).toDouble(),
+        "activity_level": profile['activity_level'],
+        
+        "body_fat_percent": profile['body_fat_percent'], // Può essere null
+        "avg_daily_steps": profile['avg_daily_steps'],   // Può essere null
+
+        "habit_name": habit['name'],
+        // Forziamo conversione numeri
+        "habit_cost": (habit['cost_per_unit'] as num).toDouble(),
+        "daily_quantity": (habit['current_daily_quantity'] as num).toInt(),
+      };
+
+      print("3. Payload pronto per Python: $payload");
+
+      // 3. CHIAMA IL BACKEND
+      final url = Uri.parse('https://leverage-backend-ht38.onrender.com/calculate-projection');
+      
+      print("4. Invio richiesta HTTP a: $url");
+      final response = await http.post(
+        url,
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode(payload),
       );
 
-      setState(() {
-        _result = response;
-      });
-      
+      print("5. Risposta ricevuta. Status Code: ${response.statusCode}");
+      print("   Body Risposta: ${response.body}"); // VEDIAMO COSA RISPONDE DAVVERO
+
+      if (response.statusCode == 200) {
+        final result = jsonDecode(response.body);
+        setState(() {
+          _data = result;
+          _isLoading = false;
+        });
+        print("--- DEBUG COMPLETATO CON SUCCESSO ---");
+      } else {
+        throw Exception('Server Error (${response.statusCode}): ${response.body}');
+      }
+
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Errore: ${e.toString()}")),
-      );
-    } finally {
+      print("!!! ECCEZIONE CATTURATA !!!");
+      print(e.toString());
       setState(() {
+        _errorMessage = "Errore: $e";
         _isLoading = false;
       });
+    }
+  }
+
+  Future<void> _logout() async {
+    await Supabase.instance.client.auth.signOut();
+    if (mounted) {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+      );
     }
   }
 
@@ -70,119 +124,126 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('LEVERAGE', style: TextStyle(letterSpacing: 2.0, fontWeight: FontWeight.bold)),
+        title: const Text("IL TUO PIANO"),
         centerTitle: true,
         backgroundColor: Colors.transparent,
         elevation: 0,
+        actions: [
+          IconButton(icon: const Icon(Icons.logout), onPressed: _logout),
+        ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text(
-              "Inserisci i costi per calcolare il tuo futuro.",
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey, fontSize: 16),
-            ),
-            const SizedBox(height: 30),
-
-            _buildInputCard(
-              title: "BENCHMARK",
-              subtitle: "Cosa stai sacrificando? (es. Fast Food)",
-              icon: Icons.fastfood,
-              color: Colors.redAccent,
-              controller: _benchmarkController,
-            ),
-
-            const SizedBox(height: 20),
-
-            _buildInputCard(
-              title: "MODULO",
-              subtitle: "La tua alternativa (es. Tonno)",
-              icon: Icons.fitness_center,
-              color: const Color(0xFF00E676),
-              controller: _moduleController,
-            ),
-
-            const SizedBox(height: 40),
-
-            _isLoading
-                ? const Center(child: CircularProgressIndicator(color: Color(0xFF00E676)))
-                : ElevatedButton(
-                    onPressed: _calculateWealth,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF00E676),
-                      foregroundColor: Colors.black,
-                      padding: const EdgeInsets.symmetric(vertical: 18),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator(color: Color(0xFF00E676)))
+          : _errorMessage != null
+              ? Center(child: Padding(padding: const EdgeInsets.all(20), child: Text(_errorMessage!, style: const TextStyle(color: Colors.red), textAlign: TextAlign.center)))
+              : SingleChildScrollView(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _buildHealthCard(),
+                      const SizedBox(height: 20),
+                      _buildWealthCard(),
+                      const SizedBox(height: 30),
+                      Text(
+                        // Uso safely del null check
+                        "Metodo Analisi: ${_data?['user_analysis']?['method'] ?? 'N/A'}",
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.grey, fontSize: 12),
                       ),
-                    ),
-                    child: const Text(
-                      "CALCOLA IMPATTO",
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                    ),
+                    ],
                   ),
-            
-            const SizedBox(height: 40),
-
-            if (_result != null && _result!['success'] == true) 
-              _buildResultCard(_result!['analysis']),
-              
-            if (_result != null && _result!['success'] == false)
-              Text(
-                _result!['message'] ?? "Errore sconosciuto",
-                style: const TextStyle(color: Colors.redAccent, fontSize: 16),
-                textAlign: TextAlign.center,
-              ),
-          ],
-        ),
-      ),
+                ),
     );
   }
 
-  Widget _buildInputCard({
-    required String title,
-    required String subtitle,
-    required IconData icon,
-    required Color color,
-    required TextEditingController controller,
-  }) {
+  Widget _buildHealthCard() {
+    // Accesso sicuro ai dati con ? e ?? per evitare crash se mancano chiavi
+    final health = _data?['user_analysis'] ?? {};
+    final impact = _data?['health_projection'] ?? {};
+    
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: const Color(0xFF1E1E1E),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: Colors.blueAccent.withOpacity(0.5)),
+        boxShadow: [
+          BoxShadow(color: Colors.blueAccent.withOpacity(0.1), blurRadius: 10, spreadRadius: 2)
+        ]
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
+          const Row(
             children: [
-              Icon(icon, color: color, size: 28),
-              const SizedBox(width: 15),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  Text(subtitle, style: const TextStyle(color: Colors.grey, fontSize: 12)),
-                ],
-              ),
+              Icon(Icons.monitor_heart, color: Colors.blueAccent),
+              SizedBox(width: 10),
+              Text("METABOLISMO & SALUTE", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             ],
           ),
+          const Divider(height: 30, color: Colors.white10),
+          
+          _row("TDEE (Mantenimento)", "${health['tdee']} Kcal"),
+          _row("BMR (Basale)", "${health['bmr']} Kcal"),
+          
           const SizedBox(height: 20),
-          TextField(
-            controller: controller,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-            decoration: InputDecoration(
-              prefixText: "€ ",
-              prefixStyle: TextStyle(color: color, fontSize: 24),
-              hintText: "0.00",
-              hintStyle: const TextStyle(color: Colors.white24),
-              border: InputBorder.none,
-              contentPadding: EdgeInsets.zero,
+          const Text("IMPATTO DEL VIZIO (al giorno):", style: TextStyle(color: Colors.grey, fontSize: 12)),
+          
+          _row("Kcal Risparmiabili", "${impact['daily_kcal_saved']} Kcal", isBad: false),
+          
+          // Controllo se esiste la chiave prima di usarla
+          if (impact['daily_life_minutes_saved'] != null && impact['daily_life_minutes_saved'] > 0)
+             _row("Vita Persa Stimata", "${impact['daily_life_minutes_saved']} min/giorno", isBad: true),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWealthCard() {
+    final wealth = _data?['wealth_projection'] ?? {};
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [const Color(0xFF00E676).withOpacity(0.1), Colors.black],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF00E676).withOpacity(0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.attach_money, color: Color(0xFF00E676)),
+              SizedBox(width: 10),
+              Text("PROIEZIONE RICCHEZZA", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ],
+          ),
+          const Divider(height: 30, color: Colors.white10),
+          
+          _row("Spreco Giornaliero", "€ ${wealth['daily_saving']}", isBad: true),
+          _row("Spreco Annuale", "€ ${wealth['annual_saving']}", isBad: true),
+          
+          const SizedBox(height: 20),
+          const Text("POTENZIALE INVESTITO (7% Annuo):", style: TextStyle(color: Colors.grey, fontSize: 12)),
+          
+          _row("Tra 10 Anni", "€ ${wealth['roi_10_years']}"),
+          
+          const SizedBox(height: 15),
+          Center(
+            child: Column(
+              children: [
+                const Text("TRA 30 ANNI", style: TextStyle(color: Color(0xFF00E676), fontWeight: FontWeight.bold, letterSpacing: 2)),
+                Text(
+                  "€ ${wealth['roi_30_years']}",
+                  style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: Color(0xFF00E676)),
+                ),
+              ],
             ),
           ),
         ],
@@ -190,55 +251,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _buildResultCard(Map<String, dynamic> analysis) {
-    final projections = analysis['roi_projections'];
-    
-    // CORREZIONE QUI: Usiamo le chiavi corrette (10_years) e la funzione _safeDouble
-    return Container(
-      padding: const EdgeInsets.all(25),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Colors.green.shade900.withOpacity(0.5), Colors.black],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFF00E676), width: 1),
-      ),
-      child: Column(
-        children: [
-          const Text("POTENZIALE GENERATO", style: TextStyle(color: Colors.white70, letterSpacing: 1.5)),
-          const SizedBox(height: 10),
-          Text(
-            "€ ${_safeDouble(analysis['daily_saving']).toStringAsFixed(2)} / giorno",
-            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white),
-          ),
-          const Divider(color: Colors.white24, height: 30),
-          
-          // Qui usiamo i nomi delle chiavi che il tuo backend sta realmente inviando
-          // E usiamo _safeDouble per evitare crash se arrivano numeri interi
-          _buildRow("10 Anni", _safeDouble(projections['10_years'] ?? projections['years_10'])), 
-          _buildRow("20 Anni", _safeDouble(projections['20_years'] ?? projections['years_20'])),
-          
-          const SizedBox(height: 15),
-          Text("TRA 30 ANNI", style: TextStyle(color: const Color(0xFF00E676), fontWeight: FontWeight.bold)),
-          Text(
-            "€ ${_safeDouble(projections['30_years'] ?? projections['years_30']).toStringAsFixed(2)}",
-            style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: const Color(0xFF00E676)),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _row(String label, String value, {bool? isBad}) {
+    Color valColor = Colors.white;
+    if (isBad == true) valColor = Colors.redAccent;
+    if (isBad == false) valColor = const Color(0xFF00E676);
 
-  Widget _buildRow(String label, double value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 5),
+      padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: const TextStyle(color: Colors.grey)),
-          Text("€ ${value.toStringAsFixed(2)}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+          Text(label, style: const TextStyle(color: Colors.white70)),
+          Text(value, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: valColor)),
         ],
       ),
     );

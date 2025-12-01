@@ -1,7 +1,17 @@
 import 'package:flutter/material.dart';
-import 'package:frontend/screens/dashboard_screen.dart'; // Importiamo la nuova schermata
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:frontend/config/theme.dart';
+import 'package:frontend/screens/login_screen.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  await Supabase.initialize(
+    url: 'https://bcmssszngmhzhcvhwomo.supabase.co',
+    // ECCOLA QUI SOTTO:
+    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJjbXNzc3puZ21oemhjdmh3b21vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0MzIxMzIsImV4cCI6MjA4MDAwODEzMn0.4XrEu76H9NNe-HRNynUJHEbrg3xAO8ScCAZu4qC5ojM', 
+  );
+
   runApp(const LeverageApp());
 }
 
@@ -12,19 +22,9 @@ class LeverageApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Leverage',
-      debugShowCheckedModeBanner: false, // Rimuove la scritta DEBUG in alto
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        primaryColor: const Color(0xFF00E676),
-        scaffoldBackgroundColor: const Color(0xFF121212),
-        useMaterial3: true,
-        colorScheme: ColorScheme.dark(
-          primary: const Color(0xFF00E676),
-          secondary: const Color(0xFF03DAC6),
-          surface: const Color(0xFF1E1E1E),
-        ),
-      ),
-      home: const DashboardScreen(), // Qui colleghiamo la dashboard
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.darkTheme, // Il tema scuro che abbiamo appena creato
+      home: const LoginScreen(), 
     );
   }
 }

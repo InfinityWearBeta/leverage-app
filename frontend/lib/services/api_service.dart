@@ -2,10 +2,9 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  // L'indirizzo del tuo backend locale
-  // Se usi Chrome: 127.0.0.1:8000
-  // Se usi Emulatore Android: 10.0.2.2:8000
-  static const String baseUrl = 'http://127.0.0.1:8000';
+  // ORA PUNTIAMO AL CLOUD (Render)
+  // Non più localhost!
+  static const String baseUrl = 'https://leverage-backend-ht38.onrender.com';
 
   Future<Map<String, dynamic>> calculateWealth({
     required double benchmarkCost,
@@ -34,7 +33,7 @@ class ApiService {
       }
     } catch (e) {
       print("Errore di connessione: $e");
-      throw Exception('Impossibile connettersi al Backend. Assicurati che sia acceso!');
+      throw Exception('Impossibile connettersi al Server Cloud.');
     }
   }
 }
