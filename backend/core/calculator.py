@@ -19,15 +19,11 @@ class WealthCalculator:
         # Assumiamo 365 giorni. Es: 10€ al giorno = 3650€ l'anno.
         annual_contribution = daily_saving * 365
 
-        # 2. Applichiamo la formula dell'interesse composto per una serie di pagamenti
-        # FV = Future Value
-        # P = Pagamento Annuale
-        # r = Tasso interesse (0.07)
-        # n = Numero di anni
-        
+        # Gestione caso tasso zero
         if self.annual_rate == 0:
-            return annual_contribution * years
+            return round(annual_contribution * years, 2)
 
+        # 2. Applichiamo la formula dell'interesse composto per una serie di pagamenti
         future_value = annual_contribution * (((1 + self.annual_rate) ** years - 1) / self.annual_rate)
 
         return round(future_value, 2)
@@ -38,7 +34,8 @@ class WealthCalculator:
         """
         return {
             "daily_saving": daily_saving,
-            "10_years": self.calculate_compound_interest(daily_saving, 10),
-            "20_years": self.calculate_compound_interest(daily_saving, 20),
-            "30_years": self.calculate_compound_interest(daily_saving, 30),
+            # CHIAVI CORRETTE (Allineate con main.py)
+            "years_10": self.calculate_compound_interest(daily_saving, 10),
+            "years_20": self.calculate_compound_interest(daily_saving, 20),
+            "years_30": self.calculate_compound_interest(daily_saving, 30),
         }

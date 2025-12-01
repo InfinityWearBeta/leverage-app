@@ -3,10 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional 
 from core.calculator import WealthCalculator
-from core.health import HealthCalculator # <--- Ora questo funzionerà!
+from core.health import HealthCalculator
 
 app = FastAPI(title="LEVERAGE API 2.1 - Hybrid")
 
+# Configurazione CORS per permettere a Flutter e Render di parlarsi
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,9 +16,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Inizializziamo i motori
 wealth_calc = WealthCalculator(interest_rate=0.07)
 health_calc = HealthCalculator()
 
+# Il Contratto Dati
 class UserDataInput(BaseModel):
     # Livello 1 (Obbligatorio)
     age: int
@@ -37,15 +40,17 @@ class UserDataInput(BaseModel):
 
 @app.get("/")
 def read_root():
-    return {"status": "online", "version": "2.1 Hybrid"}
+    return {"status": "online", "version": "2.1 Hybrid Fixed"}
 
 @app.post("/calculate-projection")
 def calculate_impact(data: UserDataInput):
     # 1. Calcolo Finanziario
     daily_saving = data.habit_cost * data.daily_quantity
+    
+    # Otteniamo il dizionario con le chiavi 'years_10', 'years_20', etc.
     projections = wealth_calc.generate_projections(daily_saving)
     
-    # 2. Calcolo Salute (Passiamo anche i dati opzionali)
+    # 2. Calcolo Salute
     health_analysis = health_calc.calculate_tdee(
         weight_kg=data.weight_kg, 
         height_cm=data.height_cm, 
@@ -65,8 +70,9 @@ def calculate_impact(data: UserDataInput):
         "wealth_projection": {
             "daily_saving": round(daily_saving, 2),
             "annual_saving": round(daily_saving * 365, 2),
-            "roi_10_years": projections['years_10'], # Corretto in inglese
-            "roi_30_years": projections['years_30']  # Corretto in inglese
+            # Qui cerchiamo le chiavi corrette definite in calculator.py
+            "roi_10_years": projections['years_10'],
+            "roi_30_years": projections['years_30']
         },
         "health_projection": health_impact
     }
