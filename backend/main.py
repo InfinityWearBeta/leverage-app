@@ -65,8 +65,8 @@ def calculate_impact(data: UserDataInput):
         "wealth_projection": {
             "daily_saving": round(daily_saving, 2),
             "annual_saving": round(daily_saving * 365, 2),
-            "roi_10_years": projections['years_10'],
-            "roi_30_years": projections['years_30']
+            "roi_10_years": projections['years_10'], # Corretto in inglese
+            "roi_30_years": projections['years_30']  # Corretto in inglese
         },
         "health_projection": health_impact
     }
