@@ -23,27 +23,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _fetchAndCalculate() async {
-    print("--- INIZIO DEBUG DASHBOARD ---"); // DEBUG LOG
-    
     final supabase = Supabase.instance.client;
     final userId = supabase.auth.currentUser?.id;
 
-    if (userId == null) {
-      print("ERRORE: Utente non loggato");
-      return;
-    }
+    if (userId == null) return;
 
     try {
-      // 1. RECUPERA DATI DA SUPABASE
-      print("1. Recupero profilo da Supabase...");
       final profile = await supabase.from('profiles').select().eq('id', userId).single();
-      print("   Profilo OK: ${profile['id']}");
-
-      print("2. Recupero vizio da Supabase...");
       final habitResponse = await supabase.from('habits').select().eq('user_id', userId).limit(1);
       
       if (habitResponse.isEmpty) {
-        print("   ERRORE: Nessun vizio trovato.");
         setState(() {
           _errorMessage = "Nessun vizio trovato. Rifai l'onboarding.";
           _isLoading = false;
@@ -51,59 +40,41 @@ class _DashboardScreenState extends State<DashboardScreen> {
         return;
       }
       final habit = habitResponse[0];
-      print("   Vizio OK: ${habit['name']}");
 
-      // 2. PREPARA IL PACCHETTO
-      // Parsing sicuro della data
       final birthDate = DateTime.parse(profile['birth_date']);
       final age = DateTime.now().year - birthDate.year;
 
       final Map<String, dynamic> payload = {
         "age": age,
         "gender": profile['gender'],
-        // Forziamo la conversione a double per sicurezza
         "weight_kg": (profile['weight_kg'] as num).toDouble(),
         "height_cm": (profile['height_cm'] as num).toDouble(),
         "activity_level": profile['activity_level'],
-        
-        "body_fat_percent": profile['body_fat_percent'], // Può essere null
-        "avg_daily_steps": profile['avg_daily_steps'],   // Può essere null
-
+        "body_fat_percent": profile['body_fat_percent'],
+        "avg_daily_steps": profile['avg_daily_steps'],
         "habit_name": habit['name'],
-        // Forziamo conversione numeri
         "habit_cost": (habit['cost_per_unit'] as num).toDouble(),
         "daily_quantity": (habit['current_daily_quantity'] as num).toInt(),
       };
 
-      print("3. Payload pronto per Python: $payload");
-
-      // 3. CHIAMA IL BACKEND
       final url = Uri.parse('https://leverage-backend-ht38.onrender.com/calculate-projection');
-      
-      print("4. Invio richiesta HTTP a: $url");
+
       final response = await http.post(
         url,
         headers: {"Content-Type": "application/json"},
         body: jsonEncode(payload),
       );
 
-      print("5. Risposta ricevuta. Status Code: ${response.statusCode}");
-      print("   Body Risposta: ${response.body}"); // VEDIAMO COSA RISPONDE DAVVERO
-
       if (response.statusCode == 200) {
-        final result = jsonDecode(response.body);
         setState(() {
-          _data = result;
+          _data = jsonDecode(response.body);
           _isLoading = false;
         });
-        print("--- DEBUG COMPLETATO CON SUCCESSO ---");
       } else {
-        throw Exception('Server Error (${response.statusCode}): ${response.body}');
+        throw Exception('Server Error: ${response.statusCode}');
       }
 
     } catch (e) {
-      print("!!! ECCEZIONE CATTURATA !!!");
-      print(e.toString());
       setState(() {
         _errorMessage = "Errore: $e";
         _isLoading = false;
@@ -123,146 +94,217 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("IL TUO PIANO"),
-        centerTitle: true,
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        actions: [
-          IconButton(icon: const Icon(Icons.logout), onPressed: _logout),
-        ],
-      ),
+      backgroundColor: const Color(0xFF0A0A0A), // Nero ancora più profondo
       body: _isLoading
           ? const Center(child: CircularProgressIndicator(color: Color(0xFF00E676)))
           : _errorMessage != null
-              ? Center(child: Padding(padding: const EdgeInsets.all(20), child: Text(_errorMessage!, style: const TextStyle(color: Colors.red), textAlign: TextAlign.center)))
-              : SingleChildScrollView(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _buildHealthCard(),
-                      const SizedBox(height: 20),
-                      _buildWealthCard(),
-                      const SizedBox(height: 30),
-                      Text(
-                        // Uso safely del null check
-                        "Metodo Analisi: ${_data?['user_analysis']?['method'] ?? 'N/A'}",
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.grey, fontSize: 12),
-                      ),
-                    ],
+              ? Center(child: Text(_errorMessage!, style: const TextStyle(color: Colors.red)))
+              : SafeArea(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // HEADER: Saluto e Avatar
+                        _buildHeader(),
+                        const SizedBox(height: 30),
+
+                        // MAIN CARD: Visa Infinite Style
+                        _buildWealthCard(),
+                        
+                        const SizedBox(height: 30),
+
+                        // WEEKLY TRACKER (Visual Only per ora)
+                        _buildWeeklyTracker(),
+
+                        const SizedBox(height: 30),
+
+                        // QUICK STATS
+                        const Text("METRICHE CHIAVE", style: TextStyle(color: Colors.white54, letterSpacing: 1.5, fontSize: 12, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 15),
+                        _buildStatsGrid(),
+                        
+                        const SizedBox(height: 30),
+                      ],
+                    ),
                   ),
                 ),
     );
   }
 
-  Widget _buildHealthCard() {
-    // Accesso sicuro ai dati con ? e ?? per evitare crash se mancano chiavi
-    final health = _data?['user_analysis'] ?? {};
-    final impact = _data?['health_projection'] ?? {};
+  // 1. HEADER MODERNO
+  Widget _buildHeader() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text("Benvenuto,", style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 16)),
+            const Text("Investitore", style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        InkWell(
+          onTap: _logout,
+          child: Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.1),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.logout, color: Colors.white, size: 20),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // 2. WEALTH CARD (Stile Carta di Credito Premium)
+  Widget _buildWealthCard() {
+    final wealth = _data!['wealth_projection'];
     
+    return Container(
+      width: double.infinity,
+      height: 220,
+      padding: const EdgeInsets.all(25),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF00E676), Color(0xFF00693E)], // Gradiente Verde Lussuoso
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(30),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF00E676).withOpacity(0.3),
+            blurRadius: 20,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(color: Colors.black26, borderRadius: BorderRadius.circular(20)),
+                child: const Text("PROIEZIONE 30 ANNI", style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+              ),
+              const Icon(Icons.show_chart, color: Colors.white54),
+            ],
+          ),
+          
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text("€ ${wealth['roi_30_years']}", style: const TextStyle(fontSize: 40, fontWeight: FontWeight.w900, color: Colors.white, letterSpacing: -1)),
+              const Text("+7% Compound Interest", style: TextStyle(color: Colors.white70, fontSize: 12)),
+            ],
+          ),
+
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text("SPRECO ANNUO", style: TextStyle(color: Colors.white54, fontSize: 10)),
+                  Text("€ ${wealth['annual_saving']}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                ],
+              ),
+              // Bottone azione finto sulla carta
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+                child: const Icon(Icons.arrow_forward, color: Color(0xFF00693E), size: 20),
+              )
+            ],
+          )
+        ],
+      ),
+    );
+  }
+
+  // 3. WEEKLY TRACKER (Elemento visuale per riempire)
+  Widget _buildWeeklyTracker() {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: const Color(0xFF1E1E1E),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.blueAccent.withOpacity(0.5)),
-        boxShadow: [
-          BoxShadow(color: Colors.blueAccent.withOpacity(0.1), blurRadius: 10, spreadRadius: 2)
-        ]
+        borderRadius: BorderRadius.circular(24),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Icon(Icons.monitor_heart, color: Colors.blueAccent),
-              SizedBox(width: 10),
-              Text("METABOLISMO & SALUTE", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              Text("Streak Settimanale", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              Text("🔥 3 Giorni", style: TextStyle(color: Color(0xFF00E676), fontWeight: FontWeight.bold)),
             ],
           ),
-          const Divider(height: 30, color: Colors.white10),
-          
-          _row("TDEE (Mantenimento)", "${health['tdee']} Kcal"),
-          _row("BMR (Basale)", "${health['bmr']} Kcal"),
-          
-          const SizedBox(height: 20),
-          const Text("IMPATTO DEL VIZIO (al giorno):", style: TextStyle(color: Colors.grey, fontSize: 12)),
-          
-          _row("Kcal Risparmiabili", "${impact['daily_kcal_saved']} Kcal", isBad: false),
-          
-          // Controllo se esiste la chiave prima di usarla
-          if (impact['daily_life_minutes_saved'] != null && impact['daily_life_minutes_saved'] > 0)
-             _row("Vita Persa Stimata", "${impact['daily_life_minutes_saved']} min/giorno", isBad: true),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildWealthCard() {
-    final wealth = _data?['wealth_projection'] ?? {};
-
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [const Color(0xFF00E676).withOpacity(0.1), Colors.black],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight
-        ),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF00E676).withOpacity(0.5)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Row(
-            children: [
-              Icon(Icons.attach_money, color: Color(0xFF00E676)),
-              SizedBox(width: 10),
-              Text("PROIEZIONE RICCHEZZA", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            ],
-          ),
-          const Divider(height: 30, color: Colors.white10),
-          
-          _row("Spreco Giornaliero", "€ ${wealth['daily_saving']}", isBad: true),
-          _row("Spreco Annuale", "€ ${wealth['annual_saving']}", isBad: true),
-          
-          const SizedBox(height: 20),
-          const Text("POTENZIALE INVESTITO (7% Annuo):", style: TextStyle(color: Colors.grey, fontSize: 12)),
-          
-          _row("Tra 10 Anni", "€ ${wealth['roi_10_years']}"),
-          
           const SizedBox(height: 15),
-          Center(
-            child: Column(
-              children: [
-                const Text("TRA 30 ANNI", style: TextStyle(color: Color(0xFF00E676), fontWeight: FontWeight.bold, letterSpacing: 2)),
-                Text(
-                  "€ ${wealth['roi_30_years']}",
-                  style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: Color(0xFF00E676)),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: ["L", "M", "M", "G", "V", "S", "D"].map((day) {
+              bool isActive = day == "L" || day == "M" || day == "M"; // Finto stato attivo
+              return Container(
+                width: 35,
+                height: 35,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: isActive ? const Color(0xFF00E676) : Colors.white10,
+                  shape: BoxShape.circle,
                 ),
-              ],
-            ),
+                child: Text(day, style: TextStyle(color: isActive ? Colors.black : Colors.grey, fontWeight: FontWeight.bold)),
+              );
+            }).toList(),
           ),
         ],
       ),
     );
   }
 
-  Widget _row(String label, String value, {bool? isBad}) {
-    Color valColor = Colors.white;
-    if (isBad == true) valColor = Colors.redAccent;
-    if (isBad == false) valColor = const Color(0xFF00E676);
+  // 4. STATS GRID
+  Widget _buildStatsGrid() {
+    final health = _data!['user_analysis'];
+    final impact = _data!['health_projection'];
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    return GridView.count(
+      crossAxisCount: 2,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      crossAxisSpacing: 15,
+      mainAxisSpacing: 15,
+      childAspectRatio: 1.5,
+      children: [
+        _miniCard("TDEE", "${health['tdee']} Kcal", Icons.local_fire_department, Colors.orange),
+        _miniCard("Vita Persa", "${impact['daily_life_minutes_saved']} min", Icons.timelapse, Colors.redAccent),
+        _miniCard("Risparmio", "€ ${_data!['wealth_projection']['daily_saving']}/die", Icons.savings, Colors.blueAccent),
+        _miniCard("ROI 10y", "€ ${_data!['wealth_projection']['roi_10_years']}", Icons.rocket_launch, Colors.purpleAccent),
+      ],
+    );
+  }
+
+  Widget _miniCard(String title, String value, IconData icon, Color color) {
+    return Container(
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Text(label, style: const TextStyle(color: Colors.white70)),
-          Text(value, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: valColor)),
+          Icon(icon, color: color, size: 20),
+          const Spacer(),
+          Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+          Text(title, style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.5))),
         ],
       ),
     );
