@@ -1,16 +1,13 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from typing import List
 from pydantic import BaseModel
-from typing import List, Optional
 
-# Importiamo il nuovo motore logico avanzato e i suoi modelli dati
-# Assicurati che il file 'backend/core/solvency_core.py' esista
+# Importa i modelli dal file core
 from core.solvency_core import SolvencyManager, UserProfile, Expense, DailyLog
 
-app = FastAPI(title="LEVERAGE API 8.0 - Bio-Financial God Mode")
+app = FastAPI(title="Leverage API 8.1")
 
-# --- CONFIGURAZIONE CORS ---
-# Permette all'app Flutter (Web e Mobile) di comunicare con il server senza blocchi
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,44 +16,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- MODELLO DI RICHIESTA (WRAPPER v8.0) ---
-# Questo modello definisce la struttura esatta del JSON che Flutter deve inviare.
-# Raggruppa i tre pilastri: Profilo Utente, Spese Fisse, Diario Giornaliero.
-class BioSolvencyRequest(BaseModel):
+class RequestPayload(BaseModel):
     profile: UserProfile
     expenses: List[Expense]
     logs: List[DailyLog]
 
-# --- ENDPOINTS ---
-
-@app.get("/")
-def read_root():
-    """Health Check: Verifica se il server è vivo."""
-    return {"status": "online", "version": "8.0 Active"}
-
 @app.post("/calculate-bio-solvency")
-def calculate_bio_solvency_endpoint(data: BioSolvencyRequest):
-    """
-    ENDPOINT PRINCIPALE (Il Cervello).
-    Input: Stato completo dell'utente (Profilo, Spese, Log).
-    Output: JSON con 3 sezioni (Financial, Biological, Psychology).
-    """
+def calculate_state(payload: RequestPayload):
     try:
-        # 1. Istanziamo il Manager iniettando i dati ricevuti
-        manager = SolvencyManager(
-            profile=data.profile,
-            expenses=data.expenses,
-            logs=data.logs
-        )
-        
-        # 2. Eseguiamo il calcolo
-        # Questo metodo contiene tutta la logica "God Mode"
-        result = manager.calculate_bio_financial_state()
-        
-        return result
-
+        manager = SolvencyManager(payload.profile, payload.expenses, payload.logs)
+        return manager.calculate_bio_financial_state()
     except Exception as e:
-        # Gestione robusta degli errori
-        error_msg = f"Calculation Engine Failure: {str(e)}"
-        print(f"❌ ERRORE CRITICO: {error_msg}") 
-        raise HTTPException(status_code=500, detail=error_msg)
+        print(f"Server Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
