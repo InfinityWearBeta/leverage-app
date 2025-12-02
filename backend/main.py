@@ -1,14 +1,16 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional 
-from core.calculator import WealthCalculator
-from core.health import HealthCalculator
-from core.solvency import SolvencyEngine, SolvencyInput # <--- NUOVO IMPORT
+from typing import List, Optional
 
-app = FastAPI(title="LEVERAGE API 4.2 - Bio-Financial")
+# Importiamo il nuovo motore logico avanzato e i suoi modelli dati
+# Assicurati che il file 'backend/core/solvency_core.py' esista
+from core.solvency_core import SolvencyManager, UserProfile, Expense, DailyLog
 
-# Configurazione CORS per permettere a Flutter e Render di parlarsi
+app = FastAPI(title="LEVERAGE API 8.0 - Bio-Financial God Mode")
+
+# --- CONFIGURAZIONE CORS ---
+# Permette all'app Flutter (Web e Mobile) di comunicare con il server senza blocchi
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,78 +19,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Inizializziamo i motori
-wealth_calc = WealthCalculator(interest_rate=0.07)
-health_calc = HealthCalculator()
-solvency_engine = SolvencyEngine() # <--- Istanza Motore Solvibilità
-
-# --- MODELLI DATI ---
-
-# Modello per la proiezione a lungo termine (Livello 1/2)
-class UserDataInput(BaseModel):
-    # Livello 1 (Obbligatorio)
-    age: int
-    gender: str
-    weight_kg: float
-    height_cm: float
-    activity_level: str
-    
-    # Livello 2 (Opzionale - Default None)
-    body_fat_percent: Optional[float] = None
-    avg_daily_steps: Optional[int] = None
-    
-    # Dati Vizio
-    habit_name: str
-    habit_cost: float
-    daily_quantity: int
+# --- MODELLO DI RICHIESTA (WRAPPER) ---
+# Questo modello definisce la struttura esatta del JSON che Flutter deve inviare.
+# Raggruppa i tre pilastri: Profilo Utente, Spese Fisse, Diario Giornaliero.
+class BioSolvencyRequest(BaseModel):
+    profile: UserProfile
+    expenses: List[Expense]
+    logs: List[DailyLog]
 
 # --- ENDPOINTS ---
 
 @app.get("/")
 def read_root():
-    return {"status": "online", "version": "4.2 Solvency Active"}
-
-# ENDPOINT 1: Proiezione Ricchezza e Salute (Lungo Termine)
-@app.post("/calculate-projection")
-def calculate_impact(data: UserDataInput):
-    # 1. Calcolo Finanziario
-    daily_saving = data.habit_cost * data.daily_quantity
-    
-    # Otteniamo il dizionario con le chiavi 'years_10', 'years_20', etc.
-    projections = wealth_calc.generate_projections(daily_saving)
-    
-    # 2. Calcolo Salute
-    health_analysis = health_calc.calculate_tdee(
-        weight_kg=data.weight_kg, 
-        height_cm=data.height_cm, 
-        age=data.age, 
-        gender=data.gender, 
-        activity_level=data.activity_level,
-        body_fat_percent=data.body_fat_percent, # Potrebbe essere None
-        avg_daily_steps=data.avg_daily_steps    # Potrebbe essere None
-    )
-    
-    health_impact = health_calc.calculate_health_impact(
-        data.habit_name, data.daily_quantity
-    )
-
+    """Health Check: Verifica se il server è vivo."""
     return {
-        "user_analysis": health_analysis,
-        "wealth_projection": {
-            "daily_saving": round(daily_saving, 2),
-            "annual_saving": round(daily_saving * 365, 2),
-            # Le chiavi devono corrispondere a quelle in calculator.py
-            "roi_10_years": projections['years_10'],
-            "roi_30_years": projections['years_30']
-        },
-        "health_projection": health_impact
+        "status": "online", 
+        "version": "8.0 Bio-Financial Active",
+        "engine": "SolvencyManager v1.0"
     }
 
-# ENDPOINT 2: Solvibilità Quotidiana (Breve Termine - SDS)
-@app.post("/calculate-solvency")
-def calculate_solvency_endpoint(data: SolvencyInput):
+@app.post("/calculate-bio-solvency")
+def calculate_bio_financial_state_endpoint(data: BioSolvencyRequest):
     """
-    Calcola quanto l'utente può spendere (Soldi) e consumare (Kcal) OGGI
-    per rimanere in linea con i suoi obiettivi fino al prossimo stipendio.
+    ENDPOINT PRINCIPALE (Il Cervello).
+    
+    Input: Stato completo dell'utente (Profilo, Spese, Log).
+    Output: JSON con 3 sezioni (Financial, Biological, Psychology).
+    
+    Logica:
+    1. Riceve i dati e li valida automaticamente grazie a Pydantic.
+    2. Istanzia il SolvencyManager.
+    3. Esegue i calcoli complessi (SDS, SDC, Sugar Tax, Negotiation).
+    4. Restituisce il risultato strutturato.
     """
-    return solvency_engine.calculate_metrics(data)
+    try:
+        # 1. Istanziamo il Manager iniettando i dati ricevuti
+        manager = SolvencyManager(
+            profile=data.profile,
+            expenses=data.expenses,
+            logs=data.logs
+        )
+        
+        # 2. Eseguiamo il calcolo
+        # Questo metodo contiene tutta la logica "God Mode" (Date, Windfall, Tasse)
+        result = manager.calculate_bio_financial_state()
+        
+        return result
+
+    except Exception as e:
+        # Gestione robusta degli errori: se il motore fallisce, non crashare silenziosamente
+        # ma restituisci un errore 500 con i dettagli per il debug.
+        error_msg = f"Calculation Engine Failure: {str(e)}"
+        print(f"❌ ERRORE CRITICO: {error_msg}") # Log visibile nella console di Render
+        raise HTTPException(status_code=500, detail=error_msg)
+
+# Nota: I vecchi endpoint (es. /calculate-projection) sono stati rimossi 
+# per mantenere l'architettura pulita e forzare l'uso del nuovo standard v8.0.
