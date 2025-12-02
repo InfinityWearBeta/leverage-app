@@ -4,8 +4,9 @@ from pydantic import BaseModel
 from typing import Optional 
 from core.calculator import WealthCalculator
 from core.health import HealthCalculator
+from core.solvency import SolvencyEngine, SolvencyInput # <--- NUOVO IMPORT
 
-app = FastAPI(title="LEVERAGE API 2.1 - Hybrid")
+app = FastAPI(title="LEVERAGE API 4.2 - Bio-Financial")
 
 # Configurazione CORS per permettere a Flutter e Render di parlarsi
 app.add_middleware(
@@ -19,8 +20,11 @@ app.add_middleware(
 # Inizializziamo i motori
 wealth_calc = WealthCalculator(interest_rate=0.07)
 health_calc = HealthCalculator()
+solvency_engine = SolvencyEngine() # <--- Istanza Motore Solvibilità
 
-# Il Contratto Dati
+# --- MODELLI DATI ---
+
+# Modello per la proiezione a lungo termine (Livello 1/2)
 class UserDataInput(BaseModel):
     # Livello 1 (Obbligatorio)
     age: int
@@ -38,10 +42,13 @@ class UserDataInput(BaseModel):
     habit_cost: float
     daily_quantity: int
 
+# --- ENDPOINTS ---
+
 @app.get("/")
 def read_root():
-    return {"status": "online", "version": "2.1 Hybrid Fixed"}
+    return {"status": "online", "version": "4.2 Solvency Active"}
 
+# ENDPOINT 1: Proiezione Ricchezza e Salute (Lungo Termine)
 @app.post("/calculate-projection")
 def calculate_impact(data: UserDataInput):
     # 1. Calcolo Finanziario
@@ -70,9 +77,18 @@ def calculate_impact(data: UserDataInput):
         "wealth_projection": {
             "daily_saving": round(daily_saving, 2),
             "annual_saving": round(daily_saving * 365, 2),
-            # Qui cerchiamo le chiavi corrette definite in calculator.py
+            # Le chiavi devono corrispondere a quelle in calculator.py
             "roi_10_years": projections['years_10'],
             "roi_30_years": projections['years_30']
         },
         "health_projection": health_impact
     }
+
+# ENDPOINT 2: Solvibilità Quotidiana (Breve Termine - SDS)
+@app.post("/calculate-solvency")
+def calculate_solvency_endpoint(data: SolvencyInput):
+    """
+    Calcola quanto l'utente può spendere (Soldi) e consumare (Kcal) OGGI
+    per rimanere in linea con i suoi obiettivi fino al prossimo stipendio.
+    """
+    return solvency_engine.calculate_metrics(data)
