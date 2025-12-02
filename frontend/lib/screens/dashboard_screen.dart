@@ -22,15 +22,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<dynamic> _selectedDayLogs = []; 
   List<dynamic> _userHabitsCache = [];
 
-  // Variabili Solvibilità
-  double _financialSDS = 0.0;
-  double _pendingBills = 0.0;
-  String _financialStatus = "CALCOLO...";
+  // --- VARIABILI DI STATO (Quelle che mancavano) ---
+  double _financialSDS = 0.0;     // Safe Daily Spend
+  int _caloricSDC = 0;            // Safe Daily Calories
+  String _financialStatus = "..."; 
   int _daysToPayday = 0;
-  int _caloricSDC = 0;        
-  int _tdee = 2000; // Default
-
-  // Variabili per i Widget Grafici (Progresso Giornaliero)
+  double _pendingBills = 0.0;
+  int _tdee = 2000;
+  
+  // Variabili per i grafici giornalieri
   double _moneySpentToday = 0.0;
   int _caloriesConsumedToday = 0;
 
@@ -46,6 +46,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (userId == null) return;
 
     try {
+      // 1. RECUPERA DATI
       final profile = await supabase.from('profiles').select().eq('id', userId).single();
       final logs = await supabase.from('daily_logs').select().eq('user_id', userId).order('created_at', ascending: false);
       final habits = await supabase.from('habits').select().eq('user_id', userId);
@@ -60,19 +61,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
          _tdee = (bmr * (profile['activity_level'] == 'Active' ? 1.55 : 1.2)).toInt();
       }
 
-      // Calcolo Spese e Calorie di OGGI per i Widget
+      // Calcolo Spese e Calorie di OGGI
       double spentToday = 0.0;
       int kcalToday = 0;
       final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
       
       for (var log in logs) {
         if (log['date'].toString().startsWith(todayStr)) {
-           // Se è una spesa
            if (log['log_type'] == 'expense') {
              spentToday += (log['amount_saved'] as num).toDouble();
            }
-           // Se è un vizio consumato, cerchiamo di stimare il costo se negativo (perdita)
-           // Nota: Per ora semplifichiamo sommando solo le spese esplicite
+           // Qui in futuro sommeremo le calorie
         }
       }
 
@@ -138,31 +137,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  // --- FIX BUG: RIMBORSO SU CANCELLAZIONE ---
   Future<void> _deleteLog(String logId, String type, double amount) async {
     try {
-      // 1. Se era una spesa, dobbiamo RIDARE i soldi al conto
       if (type == 'expense' || (type == 'vice_consumed' && amount < 0)) {
-        // Nota: amount nei log vizi è negativo se speso? Nel nostro codice amount_saved è positivo per la spesa.
-        // Assumiamo che se è 'expense', amount è positivo e va rimborsato.
         await _refundUserBalance(amount);
       }
-
-      // 2. Cancella il log
       await Supabase.instance.client.from('daily_logs').delete().eq('id', logId);
-      
-      // 3. Aggiorna tutto
       _fetchAndCalculate();
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Log annullato (Saldo aggiornato).")));
-      }
     } catch (e) {
       print(e);
     }
   }
 
-  // Helper per rimborsare
   Future<void> _refundUserBalance(double amount) async {
     final userId = Supabase.instance.client.auth.currentUser!.id;
     final profile = await Supabase.instance.client.from('profiles').select('current_savings').eq('id', userId).single();
@@ -212,14 +198,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
               children: [
                 _buildSolvencyCockpit(),
                 const SizedBox(height: 15),
-                
-                // NUOVO: WIDGET PROGRESSO GIORNALIERO
                 _buildDailyProgress(),
-                
                 const SizedBox(height: 15),
                 _buildCalendar(),
                 const Divider(color: Colors.white10, height: 20),
-                
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   child: Row(
@@ -284,26 +266,48 @@ class _DashboardScreenState extends State<DashboardScreen> {
             crossAxisAlignment: CrossAxisAlignment.end,
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text("€ ${_financialSDS.toStringAsFixed(2)}", style: TextStyle(color: statusColor, fontSize: 42, fontWeight: FontWeight.w900)),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text("€ ${_financialSDS.toStringAsFixed(2)}", style: TextStyle(color: statusColor, fontSize: 40, fontWeight: FontWeight.w900)),
+                  Text("Spendibili oggi", style: TextStyle(color: statusColor.withOpacity(0.7), fontSize: 12)),
+                ],
+              ),
               Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  Text("$_daysToPayday giorni", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                  const Text("al Payday", style: TextStyle(color: Colors.grey, fontSize: 10)),
+                  const Icon(Icons.bolt, color: Colors.blueAccent, size: 24),
+                  Text("$_caloricSDC Kcal", style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+                  const Text("SDC Residuo", style: TextStyle(color: Colors.grey, fontSize: 10)),
                 ],
               )
             ],
           ),
+          const SizedBox(height: 15),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: LinearProgressIndicator(
+              value: 1.0, 
+              backgroundColor: Colors.white10,
+              color: statusColor,
+              minHeight: 4,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text("Bollette: € ${_pendingBills.toStringAsFixed(0)}", style: const TextStyle(color: Colors.redAccent, fontSize: 10)),
+              Text("Payday: $_daysToPayday gg", style: const TextStyle(color: Colors.grey, fontSize: 10)),
+            ],
+          )
         ],
       ),
     );
   }
 
-  // --- NUOVO WIDGET: BARRE DI PROGRESSO ---
   Widget _buildDailyProgress() {
-    // Percentuali per le barre (clamped a 1.0)
     double moneyPct = _financialSDS > 0 ? (_moneySpentToday / _financialSDS).clamp(0.0, 1.0) : 0.0;
-    // double kcalPct = _tdee > 0 ? (_caloriesConsumedToday / _tdee).clamp(0.0, 1.0) : 0.0; // Scommenta quando gestiamo le calorie
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 20),
@@ -314,8 +318,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         children: [
           const Text("BILANCIO ODIERNO", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
           const SizedBox(height: 15),
-          
-          // Barra Soldi
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -333,10 +335,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               minHeight: 8,
             ),
           ),
-          
           const SizedBox(height: 15),
-          
-          // Insight
           Row(
             children: [
               const Icon(Icons.lightbulb_outline, color: Colors.amber, size: 16),
@@ -382,10 +381,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     IconData icon = Icons.circle; Color color = Colors.grey; String title = "Attività"; String subtitle = "";
     
     if (log['log_type'] == 'vice_consumed') {
-      double saved = (log['amount_saved'] as num).toDouble();
-      if (saved > 0) { icon = Icons.trending_up; color = const Color(0xFF00E676); title = "${log['sub_type']}"; subtitle = "Risparmio: €${saved.toStringAsFixed(2)}"; }
-      else if (saved < 0) { icon = Icons.warning_amber_rounded; color = Colors.orangeAccent; title = "${log['sub_type']}"; subtitle = "Extra: €${(saved * -1).toStringAsFixed(2)}"; }
-      else { icon = Icons.horizontal_rule; color = Colors.grey; title = "${log['sub_type']}"; subtitle = "Budget neutro"; }
+      icon = Icons.warning_amber_rounded; color = Colors.orangeAccent; title = "${log['sub_type']}"; subtitle = "Registrato";
+    } else if (log['log_type'] == 'vice_avoided') {
+      icon = Icons.check_circle; color = const Color(0xFF00E676); title = "${log['sub_type']}"; subtitle = "Vizio Evitato";
     } else if (log['log_type'] == 'expense') {
       icon = Icons.money_off; color = Colors.redAccent; title = "${log['category']}"; subtitle = "- €${log['amount_saved']}";
     } else if (log['log_type'] == 'workout') {
@@ -394,13 +392,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     return Card(
       color: Colors.white.withOpacity(0.05),
-      margin: const EdgeInsets.only(bottom: 8),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: ListTile(
-        leading: CircleAvatar(backgroundColor: color.withOpacity(0.2), child: Icon(icon, color: color, size: 20)),
-        title: Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
-        subtitle: Text(subtitle, style: const TextStyle(color: Colors.white70, fontSize: 12)),
-        trailing: IconButton(icon: const Icon(Icons.delete_outline, color: Colors.white30, size: 18), onPressed: () => _deleteLog(log['id'], log['log_type'], (log['amount_saved'] as num).toDouble())),
+        leading: Icon(icon, color: color),
+        title: Text(title, style: const TextStyle(color: Colors.white)),
+        subtitle: Text(subtitle, style: const TextStyle(color: Colors.grey)),
+        trailing: IconButton(
+          icon: const Icon(Icons.delete, color: Colors.white30), 
+          onPressed: () => _deleteLog(log['id'], log['log_type'], (log['amount_saved'] as num).toDouble())
+        ),
       ),
     );
   }
@@ -410,7 +409,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 }
 
-// --- SMART INPUT FORM (Resta uguale) ---
 class SmartInputForm extends StatefulWidget {
   final List<dynamic> userHabits; 
   const SmartInputForm({super.key, required this.userHabits});
@@ -560,7 +558,7 @@ class _SmartInputFormState extends State<SmartInputForm> {
                     SwitchListTile(title: const Text("Era necessaria?", style: TextStyle(color: Colors.white)), value: _isNecessary, activeColor: const Color(0xFF00E676), onChanged: (v) => setState(() => _isNecessary = v)),
                   ],
                   if (_selectedType == 'workout') ...[
-                    DropdownButtonFormField<String>(value: _workoutType, dropdownColor: const Color(0xFF1E1E1E), style: const TextStyle(color: Colors.white), items: ['Palestra', 'Corsa'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(), onChanged: (v) => setState(() => _workoutType = v!), decoration: const InputDecoration(labelText: "Attività", border: OutlineInputBorder())),
+                    DropdownButtonFormField<String>(value: _workoutType, dropdownColor: const Color(0xFF1E1E1E), style: const TextStyle(color: Colors.white), items: ['Palestra', 'Corsa', 'Nuoto', 'Yoga'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(), onChanged: (v) => setState(() => _workoutType = v!), decoration: const InputDecoration(labelText: "Attività", border: OutlineInputBorder())),
                     const SizedBox(height: 20),
                     Slider(value: _duration.toDouble(), min: 10, max: 180, divisions: 17, activeColor: Colors.blueAccent, onChanged: (v) => setState(() => _duration = v.toInt())),
                     Text("Durata: $_duration min", style: const TextStyle(color: Colors.white)),
