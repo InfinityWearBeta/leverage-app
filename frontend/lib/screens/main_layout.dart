@@ -14,24 +14,21 @@ class MainLayout extends StatefulWidget {
 class _MainLayoutState extends State<MainLayout> {
   int _currentIndex = 0;
 
-  // Lista delle pagine: L'ordine deve corrispondere alle icone in basso
+  // Lista delle pagine
   final List<Widget> _screens = [
-    const DashboardScreen(), // Home (quella che hai già fatto)
-    const StatsScreen(),     // Grafici
-    const AcademyScreen(),   // Educazione
-    const ProfileScreen(),   // Impostazioni
+    const DashboardScreen(), 
+    const StatsScreen(),     
+    const AcademyScreen(),   
+    const ProfileScreen(),   
   ];
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // Mostra la pagina selezionata
-      body: IndexedStack(
-        index: _currentIndex,
-        children: _screens,
-      ),
+      // MODIFICA QUI: Usiamo direttamente la schermata corrente.
+      // Questo costringe Flutter a ricaricare i dati (initState) ogni volta che cambi tab.
+      body: _screens[_currentIndex],
       
-      // IL MENU DI NAVIGAZIONE
       bottomNavigationBar: NavigationBarTheme(
         data: NavigationBarThemeData(
           indicatorColor: Theme.of(context).primaryColor.withOpacity(0.2),
@@ -44,7 +41,7 @@ class _MainLayoutState extends State<MainLayout> {
           onDestinationSelected: (index) {
             setState(() => _currentIndex = index);
           },
-          backgroundColor: const Color(0xFF1E1E1E), // Grigio Scuro
+          backgroundColor: const Color(0xFF1E1E1E), 
           height: 65,
           destinations: const [
             NavigationDestination(
