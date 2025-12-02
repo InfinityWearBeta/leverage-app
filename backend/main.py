@@ -19,7 +19,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- MODELLO DI RICHIESTA (WRAPPER) ---
+# --- MODELLO DI RICHIESTA (WRAPPER v8.0) ---
 # Questo modello definisce la struttura esatta del JSON che Flutter deve inviare.
 # Raggruppa i tre pilastri: Profilo Utente, Spese Fisse, Diario Giornaliero.
 class BioSolvencyRequest(BaseModel):
@@ -32,25 +32,14 @@ class BioSolvencyRequest(BaseModel):
 @app.get("/")
 def read_root():
     """Health Check: Verifica se il server è vivo."""
-    return {
-        "status": "online", 
-        "version": "8.0 Bio-Financial Active",
-        "engine": "SolvencyManager v1.0"
-    }
+    return {"status": "online", "version": "8.0 Active"}
 
 @app.post("/calculate-bio-solvency")
-def calculate_bio_financial_state_endpoint(data: BioSolvencyRequest):
+def calculate_bio_solvency_endpoint(data: BioSolvencyRequest):
     """
     ENDPOINT PRINCIPALE (Il Cervello).
-    
     Input: Stato completo dell'utente (Profilo, Spese, Log).
     Output: JSON con 3 sezioni (Financial, Biological, Psychology).
-    
-    Logica:
-    1. Riceve i dati e li valida automaticamente grazie a Pydantic.
-    2. Istanzia il SolvencyManager.
-    3. Esegue i calcoli complessi (SDS, SDC, Sugar Tax, Negotiation).
-    4. Restituisce il risultato strutturato.
     """
     try:
         # 1. Istanziamo il Manager iniettando i dati ricevuti
@@ -61,17 +50,13 @@ def calculate_bio_financial_state_endpoint(data: BioSolvencyRequest):
         )
         
         # 2. Eseguiamo il calcolo
-        # Questo metodo contiene tutta la logica "God Mode" (Date, Windfall, Tasse)
+        # Questo metodo contiene tutta la logica "God Mode"
         result = manager.calculate_bio_financial_state()
         
         return result
 
     except Exception as e:
-        # Gestione robusta degli errori: se il motore fallisce, non crashare silenziosamente
-        # ma restituisci un errore 500 con i dettagli per il debug.
+        # Gestione robusta degli errori
         error_msg = f"Calculation Engine Failure: {str(e)}"
-        print(f"❌ ERRORE CRITICO: {error_msg}") # Log visibile nella console di Render
+        print(f"❌ ERRORE CRITICO: {error_msg}") 
         raise HTTPException(status_code=500, detail=error_msg)
-
-# Nota: I vecchi endpoint (es. /calculate-projection) sono stati rimossi 
-# per mantenere l'architettura pulita e forzare l'uso del nuovo standard v8.0.
