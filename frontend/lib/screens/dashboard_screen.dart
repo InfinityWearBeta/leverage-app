@@ -22,15 +22,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<dynamic> _selectedDayLogs = []; 
   List<dynamic> _userHabitsCache = [];
 
-  // --- VARIABILI DI STATO (Quelle che mancavano) ---
-  double _financialSDS = 0.0;     // Safe Daily Spend
-  int _caloricSDC = 0;            // Safe Daily Calories
-  String _financialStatus = "..."; 
-  int _daysToPayday = 0;
+  // Variabili Solvibilità
+  double _financialSDS = 0.0;
   double _pendingBills = 0.0;
-  int _tdee = 2000;
-  
-  // Variabili per i grafici giornalieri
+  String _financialStatus = "CALCOLO...";
+  int _daysToPayday = 0;
+  int _caloricSDC = 0;        
+  int _tdee = 2000; 
+
+  // Variabili Grafici giornalieri
   double _moneySpentToday = 0.0;
   int _caloriesConsumedToday = 0;
 
@@ -46,13 +46,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (userId == null) return;
 
     try {
-      // 1. RECUPERA DATI
       final profile = await supabase.from('profiles').select().eq('id', userId).single();
       final logs = await supabase.from('daily_logs').select().eq('user_id', userId).order('created_at', ascending: false);
       final habits = await supabase.from('habits').select().eq('user_id', userId);
       final expenses = await supabase.from('fixed_expenses').select().eq('user_id', userId);
 
-      // --- CALCOLI LOCALI ---
       if (profile['weight_kg'] != null) {
          double w = (profile['weight_kg'] as num).toDouble();
          double h = (profile['height_cm'] as num).toDouble();
@@ -61,7 +59,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
          _tdee = (bmr * (profile['activity_level'] == 'Active' ? 1.55 : 1.2)).toInt();
       }
 
-      // Calcolo Spese e Calorie di OGGI
       double spentToday = 0.0;
       int kcalToday = 0;
       final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
@@ -71,11 +68,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
            if (log['log_type'] == 'expense') {
              spentToday += (log['amount_saved'] as num).toDouble();
            }
-           // Qui in futuro sommeremo le calorie
         }
       }
 
-      // Preparazione Payload per Python
       List<Map<String, dynamic>> expensesList = (expenses as List).map((e) => {
         "id": e['id'], "name": e['name'], "amount": (e['amount'] as num).toDouble(),
         "is_variable": e['is_variable'] ?? false,
@@ -139,6 +134,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _deleteLog(String logId, String type, double amount) async {
     try {
+      // RIMBORSO: Se cancelli una spesa, riaggiungi i soldi al conto
       if (type == 'expense' || (type == 'vice_consumed' && amount < 0)) {
         await _refundUserBalance(amount);
       }
@@ -153,6 +149,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final userId = Supabase.instance.client.auth.currentUser!.id;
     final profile = await Supabase.instance.client.from('profiles').select('current_savings').eq('id', userId).single();
     double current = (profile['current_savings'] as num).toDouble();
+    
+    // Nota: amount qui è quello che avevi speso (positivo nel log), quindi lo riaggiungiamo.
+    // Se il log expense aveva amount 50, facciamo current + 50.
     await Supabase.instance.client.from('profiles').update({'current_savings': current + amount}).eq('id', userId);
   }
 
@@ -381,9 +380,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     IconData icon = Icons.circle; Color color = Colors.grey; String title = "Attività"; String subtitle = "";
     
     if (log['log_type'] == 'vice_consumed') {
-      icon = Icons.warning_amber_rounded; color = Colors.orangeAccent; title = "${log['sub_type']}"; subtitle = "Registrato";
-    } else if (log['log_type'] == 'vice_avoided') {
-      icon = Icons.check_circle; color = const Color(0xFF00E676); title = "${log['sub_type']}"; subtitle = "Vizio Evitato";
+      double saved = (log['amount_saved'] as num).toDouble();
+      if (saved > 0) { icon = Icons.trending_up; color = const Color(0xFF00E676); title = "${log['sub_type']}"; subtitle = "Risparmio: €${saved.toStringAsFixed(2)}"; }
+      else if (saved < 0) { icon = Icons.warning_amber_rounded; color = Colors.orangeAccent; title = "${log['sub_type']}"; subtitle = "Extra: €${(saved * -1).toStringAsFixed(2)}"; }
+      else { icon = Icons.horizontal_rule; color = Colors.grey; title = "${log['sub_type']}"; subtitle = "Budget neutro"; }
     } else if (log['log_type'] == 'expense') {
       icon = Icons.money_off; color = Colors.redAccent; title = "${log['category']}"; subtitle = "- €${log['amount_saved']}";
     } else if (log['log_type'] == 'workout') {
@@ -392,12 +392,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     return Card(
       color: Colors.white.withOpacity(0.05),
+      margin: const EdgeInsets.only(bottom: 8),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: ListTile(
-        leading: Icon(icon, color: color),
-        title: Text(title, style: const TextStyle(color: Colors.white)),
-        subtitle: Text(subtitle, style: const TextStyle(color: Colors.grey)),
+        leading: CircleAvatar(backgroundColor: color.withOpacity(0.2), child: Icon(icon, color: color, size: 20)),
+        title: Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+        subtitle: Text(subtitle, style: const TextStyle(color: Colors.white70, fontSize: 12)),
         trailing: IconButton(
-          icon: const Icon(Icons.delete, color: Colors.white30), 
+          icon: const Icon(Icons.delete_outline, color: Colors.white30, size: 18), 
           onPressed: () => _deleteLog(log['id'], log['log_type'], (log['amount_saved'] as num).toDouble())
         ),
       ),
@@ -455,6 +457,7 @@ class _SmartInputFormState extends State<SmartInputForm> {
     });
   }
 
+  // FUNZIONE CORRETTA: AGGIORNA IL SALDO
   Future<void> _updateUserBalance(String userId, double amountSpent) async {
     final profile = await Supabase.instance.client.from('profiles').select('current_savings').eq('id', userId).single();
     double current = (profile['current_savings'] as num).toDouble();
@@ -490,14 +493,16 @@ class _SmartInputFormState extends State<SmartInputForm> {
       data['amount_saved'] = delta * _unitCost; 
       data['sub_type'] = _customHabitName;
       data['category'] = 'Vizio';
-      amountSpentReal = consumed * _unitCost;
+      // Se delta è positivo (risparmio) non scala nulla. Se delta è negativo (extra), non scala per ora.
+      // La spesa reale è il consumo totale.
+      // amountSpentReal = consumed * _unitCost; (Scommentare se vuoi scalare ogni caffè dal saldo)
 
     } else if (_selectedType == 'expense') {
       double amount = double.tryParse(_amountController.text.replaceAll(',', '.')) ?? 0.0;
       data['amount_saved'] = amount; 
       data['category'] = _expenseCategory;
       data['is_necessary'] = _isNecessary;
-      amountSpentReal = amount;
+      amountSpentReal = amount; // Questa sicuramente va scalata
     } else if (_selectedType == 'workout') {
       data['sub_type'] = _workoutType;
       data['duration_min'] = _duration;
@@ -505,9 +510,12 @@ class _SmartInputFormState extends State<SmartInputForm> {
 
     try {
       await Supabase.instance.client.from('daily_logs').insert(data);
+      
+      // 🔥 LOGICA CRUCIALE: Aggiorna saldo se è una spesa
       if (amountSpentReal > 0) {
         await _updateUserBalance(userId, amountSpentReal);
       }
+
       if (mounted) Navigator.pop(context, true); 
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Errore: $e")));
@@ -540,11 +548,7 @@ class _SmartInputFormState extends State<SmartInputForm> {
                 children: [
                   if (_selectedType == 'vice_consumed') ...[
                     if (widget.userHabits.isNotEmpty) ...[
-                      DropdownButtonFormField<String>(initialValue: _selectedHabitId, dropdownColor: const Color(0xFF1E1E1E), style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Vizi Tracciati", border: OutlineInputBorder()), items: [...widget.userHabits.map((h) => DropdownMenuItem(value: h['id'].toString(), child: Text(h['name']))), const DropdownMenuItem(value: null, child: Text("+ Altro"))], onChanged: (v) { if (v != null) {
-                        _selectUserHabit(widget.userHabits.firstWhere((h) => h['id'] == v));
-                      } else {
-                        setState(() { _selectedHabitId = null; });
-                      } }),
+                      DropdownButtonFormField<String>(value: _selectedHabitId, dropdownColor: const Color(0xFF1E1E1E), style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Vizi Tracciati", border: OutlineInputBorder()), items: [...widget.userHabits.map((h) => DropdownMenuItem(value: h['id'].toString(), child: Text(h['name']))), const DropdownMenuItem(value: null, child: Text("+ Altro"))], onChanged: (v) { if (v != null) _selectUserHabit(widget.userHabits.firstWhere((h) => h['id'] == v)); else setState(() { _selectedHabitId = null; }); }),
                       const SizedBox(height: 15),
                     ],
                     if (_selectedHabitId == null) ...[
@@ -558,11 +562,11 @@ class _SmartInputFormState extends State<SmartInputForm> {
                   if (_selectedType == 'expense') ...[
                     TextField(controller: _amountController, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: "Importo (€)", border: OutlineInputBorder()), style: const TextStyle(color: Colors.white)),
                     const SizedBox(height: 15),
-                    DropdownButtonFormField<String>(initialValue: _expenseCategory, dropdownColor: const Color(0xFF1E1E1E), style: const TextStyle(color: Colors.white), items: ['Cibo', 'Trasporti', 'Svago', 'Bollette'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(), onChanged: (v) => setState(() => _expenseCategory = v!), decoration: const InputDecoration(labelText: "Categoria", border: OutlineInputBorder())),
-                    SwitchListTile(title: const Text("Era necessaria?", style: TextStyle(color: Colors.white)), value: _isNecessary, activeThumbColor: const Color(0xFF00E676), onChanged: (v) => setState(() => _isNecessary = v)),
+                    DropdownButtonFormField<String>(value: _expenseCategory, dropdownColor: const Color(0xFF1E1E1E), style: const TextStyle(color: Colors.white), items: ['Cibo', 'Trasporti', 'Svago', 'Bollette'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(), onChanged: (v) => setState(() => _expenseCategory = v!), decoration: const InputDecoration(labelText: "Categoria", border: OutlineInputBorder())),
+                    SwitchListTile(title: const Text("Era necessaria?", style: TextStyle(color: Colors.white)), value: _isNecessary, activeColor: const Color(0xFF00E676), onChanged: (v) => setState(() => _isNecessary = v)),
                   ],
                   if (_selectedType == 'workout') ...[
-                    DropdownButtonFormField<String>(initialValue: _workoutType, dropdownColor: const Color(0xFF1E1E1E), style: const TextStyle(color: Colors.white), items: ['Palestra', 'Corsa', 'Nuoto', 'Yoga'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(), onChanged: (v) => setState(() => _workoutType = v!), decoration: const InputDecoration(labelText: "Attività", border: OutlineInputBorder())),
+                    DropdownButtonFormField<String>(value: _workoutType, dropdownColor: const Color(0xFF1E1E1E), style: const TextStyle(color: Colors.white), items: ['Palestra', 'Corsa', 'Nuoto', 'Yoga'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(), onChanged: (v) => setState(() => _workoutType = v!), decoration: const InputDecoration(labelText: "Attività", border: OutlineInputBorder())),
                     const SizedBox(height: 20),
                     Slider(value: _duration.toDouble(), min: 10, max: 180, divisions: 17, activeColor: Colors.blueAccent, onChanged: (v) => setState(() => _duration = v.toInt())),
                     Text("Durata: $_duration min", style: const TextStyle(color: Colors.white)),
