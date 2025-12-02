@@ -32,7 +32,7 @@ class _MainLayoutState extends State<MainLayout> {
       bottomNavigationBar: NavigationBarTheme(
         data: NavigationBarThemeData(
           indicatorColor: Theme.of(context).primaryColor.withOpacity(0.2),
-          labelTextStyle: MaterialStateProperty.all(
+          labelTextStyle: WidgetStateProperty.all(
             const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
           ),
         ),

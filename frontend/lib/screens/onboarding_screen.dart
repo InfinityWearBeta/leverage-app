@@ -19,7 +19,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final _weightController = TextEditingController();
   final _heightController = TextEditingController();
   String _gender = 'M';
-  String _activityLevel = 'Sedentary';
+  final String _activityLevel = 'Sedentary';
 
   // --- DATI VIZIO ---
   final _habitNameController = TextEditingController();

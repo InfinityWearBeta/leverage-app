@@ -540,7 +540,11 @@ class _SmartInputFormState extends State<SmartInputForm> {
                 children: [
                   if (_selectedType == 'vice_consumed') ...[
                     if (widget.userHabits.isNotEmpty) ...[
-                      DropdownButtonFormField<String>(value: _selectedHabitId, dropdownColor: const Color(0xFF1E1E1E), style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Vizi Tracciati", border: OutlineInputBorder()), items: [...widget.userHabits.map((h) => DropdownMenuItem(value: h['id'].toString(), child: Text(h['name']))), const DropdownMenuItem(value: null, child: Text("+ Altro"))], onChanged: (v) { if (v != null) _selectUserHabit(widget.userHabits.firstWhere((h) => h['id'] == v)); else setState(() { _selectedHabitId = null; }); }),
+                      DropdownButtonFormField<String>(initialValue: _selectedHabitId, dropdownColor: const Color(0xFF1E1E1E), style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Vizi Tracciati", border: OutlineInputBorder()), items: [...widget.userHabits.map((h) => DropdownMenuItem(value: h['id'].toString(), child: Text(h['name']))), const DropdownMenuItem(value: null, child: Text("+ Altro"))], onChanged: (v) { if (v != null) {
+                        _selectUserHabit(widget.userHabits.firstWhere((h) => h['id'] == v));
+                      } else {
+                        setState(() { _selectedHabitId = null; });
+                      } }),
                       const SizedBox(height: 15),
                     ],
                     if (_selectedHabitId == null) ...[
@@ -554,11 +558,11 @@ class _SmartInputFormState extends State<SmartInputForm> {
                   if (_selectedType == 'expense') ...[
                     TextField(controller: _amountController, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: "Importo (€)", border: OutlineInputBorder()), style: const TextStyle(color: Colors.white)),
                     const SizedBox(height: 15),
-                    DropdownButtonFormField<String>(value: _expenseCategory, dropdownColor: const Color(0xFF1E1E1E), style: const TextStyle(color: Colors.white), items: ['Cibo', 'Trasporti', 'Svago', 'Bollette'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(), onChanged: (v) => setState(() => _expenseCategory = v!), decoration: const InputDecoration(labelText: "Categoria", border: OutlineInputBorder())),
-                    SwitchListTile(title: const Text("Era necessaria?", style: TextStyle(color: Colors.white)), value: _isNecessary, activeColor: const Color(0xFF00E676), onChanged: (v) => setState(() => _isNecessary = v)),
+                    DropdownButtonFormField<String>(initialValue: _expenseCategory, dropdownColor: const Color(0xFF1E1E1E), style: const TextStyle(color: Colors.white), items: ['Cibo', 'Trasporti', 'Svago', 'Bollette'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(), onChanged: (v) => setState(() => _expenseCategory = v!), decoration: const InputDecoration(labelText: "Categoria", border: OutlineInputBorder())),
+                    SwitchListTile(title: const Text("Era necessaria?", style: TextStyle(color: Colors.white)), value: _isNecessary, activeThumbColor: const Color(0xFF00E676), onChanged: (v) => setState(() => _isNecessary = v)),
                   ],
                   if (_selectedType == 'workout') ...[
-                    DropdownButtonFormField<String>(value: _workoutType, dropdownColor: const Color(0xFF1E1E1E), style: const TextStyle(color: Colors.white), items: ['Palestra', 'Corsa', 'Nuoto', 'Yoga'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(), onChanged: (v) => setState(() => _workoutType = v!), decoration: const InputDecoration(labelText: "Attività", border: OutlineInputBorder())),
+                    DropdownButtonFormField<String>(initialValue: _workoutType, dropdownColor: const Color(0xFF1E1E1E), style: const TextStyle(color: Colors.white), items: ['Palestra', 'Corsa', 'Nuoto', 'Yoga'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(), onChanged: (v) => setState(() => _workoutType = v!), decoration: const InputDecoration(labelText: "Attività", border: OutlineInputBorder())),
                     const SizedBox(height: 20),
                     Slider(value: _duration.toDouble(), min: 10, max: 180, divisions: 17, activeColor: Colors.blueAccent, onChanged: (v) => setState(() => _duration = v.toInt())),
                     Text("Durata: $_duration min", style: const TextStyle(color: Colors.white)),

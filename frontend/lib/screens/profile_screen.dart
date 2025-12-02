@@ -156,7 +156,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 TextField(controller: amountCtrl, keyboardType: TextInputType.number, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Valore (€)", labelStyle: TextStyle(color: Colors.grey))),
                 const SizedBox(height: 15),
                 DropdownButtonFormField<String>(
-                  value: category,
+                  initialValue: category,
                   dropdownColor: const Color(0xFF1E1E1E),
                   style: const TextStyle(color: Colors.white),
                   items: ['Azioni', 'ETF', 'Obbligazioni', 'Crypto', 'Liquidità', 'Immobili', 'Pensione Integrativa', 'Altro'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
@@ -170,7 +170,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   title: const Text("Fondi Bloccati?", style: TextStyle(color: Colors.white, fontSize: 14)),
                   subtitle: const Text("Attiva se non puoi prelevare questi soldi oggi (es. Vincolo, Staking, Pensione).", style: TextStyle(color: Colors.grey, fontSize: 10)),
                   value: isLocked,
-                  activeColor: Colors.orangeAccent,
+                  activeThumbColor: Colors.orangeAccent,
                   contentPadding: EdgeInsets.zero,
                   onChanged: (val) => setDialogState(() => isLocked = val),
                 )
@@ -310,14 +310,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
             // 2. INVESTIMENTI (Con indicatore Bloccato)
             Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [_sectionTitle("Portafoglio Investimenti", Icons.pie_chart), IconButton(icon: const Icon(Icons.add_circle, color: Color(0xFF00E676)), onPressed: () => _showInvestmentDialog())]),
             if (_investments.isEmpty) const Text("Nessun investimento.", style: TextStyle(color: Colors.grey)),
-            ..._investments.map((inv) => _investmentTile(inv)).toList(),
+            ..._investments.map((inv) => _investmentTile(inv)),
 
             const SizedBox(height: 30),
 
             // 3. SPESE FISSE
             Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [_sectionTitle("Spese Fisse & Ricorrenti", Icons.credit_card), IconButton(icon: const Icon(Icons.add_circle, color: Colors.redAccent), onPressed: () => _showExpenseDialog())]),
             if (_expenses.isEmpty) const Text("Nessuna spesa fissa.", style: TextStyle(color: Colors.grey)),
-            ..._expenses.map((exp) => _expenseTile(exp)).toList(),
+            ..._expenses.map((exp) => _expenseTile(exp)),
 
             const SizedBox(height: 30),
 
@@ -385,9 +385,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
     
     List<dynamic> months = item['payment_months'] ?? [];
     String freqText = "Personalizzato";
-    if (months.length == 12) freqText = "Mensile";
-    else if (months.length == 1) freqText = "Annuale";
-    else if (months.length > 0) freqText = "${months.length} pagamenti/anno";
+    if (months.length == 12) {
+      freqText = "Mensile";
+    } else if (months.length == 1) freqText = "Annuale";
+    else if (months.isNotEmpty) freqText = "${months.length} pagamenti/anno";
     else freqText = item['frequency'] ?? "Non specificato"; 
 
     return Card(
@@ -498,7 +499,7 @@ class _ExpenseFormState extends State<ExpenseForm> {
           const SizedBox(height: 20),
           TextField(controller: _nameCtrl, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Nome", prefixIcon: Icon(Icons.edit, color: Colors.grey))),
           const SizedBox(height: 15),
-          SwitchListTile(title: const Text("Importo Variabile?", style: TextStyle(color: Colors.white)), value: _isVariable, activeColor: const Color(0xFF00E676), onChanged: (v) => setState(() => _isVariable = v)),
+          SwitchListTile(title: const Text("Importo Variabile?", style: TextStyle(color: Colors.white)), value: _isVariable, activeThumbColor: const Color(0xFF00E676), onChanged: (v) => setState(() => _isVariable = v)),
           const SizedBox(height: 10),
           if (_isVariable) 
             Row(children: [Expanded(child: TextField(controller: _minCtrl, keyboardType: TextInputType.number, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Min (€)", prefixIcon: Icon(Icons.arrow_downward, color: Colors.green)))), const SizedBox(width: 10), Expanded(child: TextField(controller: _maxCtrl, keyboardType: TextInputType.number, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Max (€)", prefixIcon: Icon(Icons.arrow_upward, color: Colors.redAccent))))])

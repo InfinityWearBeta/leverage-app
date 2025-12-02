@@ -25,7 +25,6 @@ class AppTheme {
         secondary: accentBlue,
         surface: surface,
         error: errorRed,
-        background: background,
       ),
 
       // Configurazione Testi (Google Fonts)
