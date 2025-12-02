@@ -6,6 +6,18 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'login_screen.dart';
 
+/// ============================================================================
+/// DASHBOARD SCREEN (BIO-FINANCIAL COCKPIT v8.0)
+/// ============================================================================
+/// Questa è la schermata principale dell'applicazione.
+/// Funge da "orchestator" tra i dati utente (Supabase) e il motore di calcolo (Python).
+///
+/// RESPONSABILITÀ:
+/// 1. Visualizzazione KPI: Mostra SDS (Budget Giornaliero) e SDC (Calorie).
+/// 2. Data Aggregation: Raccoglie dati da 4 tabelle diverse per inviarli al backend.
+/// 3. Interaction: Permette l'inserimento rapido di log tramite SmartForm.
+/// ============================================================================
+
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
 
@@ -14,148 +26,202 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
+  // --- STATO UI ---
   bool _isLoading = true;
   DateTime _focusedDay = DateTime.now();
   DateTime _selectedDay = DateTime.now();
   
+  // --- CACHE DATI (Per evitare query ridondanti al DB) ---
   List<dynamic> _allLogs = []; 
   List<dynamic> _selectedDayLogs = []; 
-  List<dynamic> _userHabitsCache = [];
+  List<dynamic> _userHabitsCache = []; // Passata al form per i dropdown
 
-  // --- VARIABILI DI STATO (TUTTE QUELLE NECESSARIE) ---
-  double _financialSDS = 0.0;     // Safe Daily Spend
-  int _caloricSDC = 0;            // Safe Daily Calories
-  String _financialStatus = "..."; 
-  int _daysToPayday = 0;
-  double _pendingBills = 0.0;
+  // --- KPI DAL BACKEND (Il "Cervello" Python) ---
+  double _financialSDS = 0.0;      // Safe Daily Spend: Quanto puoi spendere OGGI
+  String _financialStatus = "..."; // Status: SAFE, CRITICO, INSOLVENTE
+  int _daysToPayday = 0;           // Giorni allo stipendio
+  double _pendingBills = 0.0;      // Bollette stimate in arrivo
   
-  // Variabili Grafici giornalieri
+  int _caloricSDC = 0;             // Safe Daily Calories: Quanto puoi mangiare OGGI
+  int _tdee = 2000;                // Fabbisogno base (fallback)
+  
+  // --- VARIABILI PSICOLOGICHE (Gamification) ---
+  String _viceStatus = "UNLOCKED"; // Se LOCKED, disincentiva l'uso del tasto "+"
+  int _unlockCost = 0;             // Costo in sport per sbloccare i vizi
+  String _psychoMessage = "";      // Messaggio motivazionale dal backend
+
+  // --- METRICHE GIORNALIERE (Calcolate localmente per la UI immediata) ---
   double _moneySpentToday = 0.0;
   int _caloriesConsumedToday = 0;
-  int _tdee = 2000; 
-
-  // Variabili Psicologia (QUELLLE CHE MANCAVANO)
-  String _viceStatus = "UNLOCKED"; 
-  int _unlockCost = 0;             
-  String _psychoMessage = "";      
 
   @override
   void initState() {
     super.initState();
-    _fetchAndCalculate();
+    _fetchAndCalculate(); // Avvio la sincronizzazione all'apertura
   }
 
+  /// --------------------------------------------------------------------------
+  /// CORE LOGIC: SYNC ENGINE
+  /// Recupera i dati grezzi, li impacchetta e li invia al Motore Python.
+  /// --------------------------------------------------------------------------
   Future<void> _fetchAndCalculate() async {
     final supabase = Supabase.instance.client;
     final userId = supabase.auth.currentUser?.id;
+    
+    // Safety Check: Se non c'è utente, interrompiamo.
     if (userId == null) return;
 
     try {
-      // 1. RECUPERA DATI
-      final profile = await supabase.from('profiles').select().eq('id', userId).single();
-      final logs = await supabase.from('daily_logs').select().eq('user_id', userId).order('created_at', ascending: false);
-      final habits = await supabase.from('habits').select().eq('user_id', userId);
-      final expenses = await supabase.from('fixed_expenses').select().eq('user_id', userId);
+      // 1. FETCH PARALLELO (Ottimizzazione performance)
+      // Recuperiamo tutti i dati necessari in una sola passata.
+      final profileResponse = await supabase.from('profiles').select().eq('id', userId).single();
+      final logsResponse = await supabase.from('daily_logs').select().eq('user_id', userId).order('created_at', ascending: false);
+      final habitsResponse = await supabase.from('habits').select().eq('user_id', userId);
+      final expensesResponse = await supabase.from('fixed_expenses').select().eq('user_id', userId);
 
-      // --- CALCOLI LOCALI ---
-      if (profile['weight_kg'] != null) {
-         double w = (profile['weight_kg'] as num).toDouble();
-         double h = (profile['height_cm'] as num).toDouble();
-         int a = DateTime.now().year - DateTime.parse(profile['birth_date']).year;
-         double bmr = (10 * w) + (6.25 * h) - (5 * a) + (profile['gender'] == 'M' ? 5 : -161);
-         _tdee = (bmr * (profile['activity_level'] == 'Active' ? 1.55 : 1.2)).toInt();
+      // 2. PRE-PROCESSING LOCALE
+      // Calcoliamo il TDEE base se disponibile, altrimenti usiamo un default
+      if (profileResponse['weight_kg'] != null) {
+         double w = (profileResponse['weight_kg'] as num).toDouble();
+         double h = (profileResponse['height_cm'] as num).toDouble();
+         int a = DateTime.now().year - DateTime.parse(profileResponse['birth_date']).year;
+         // Formula Mifflin-St Jeor
+         double bmr = (10 * w) + (6.25 * h) - (5 * a) + (profileResponse['gender'] == 'M' ? 5 : -161);
+         _tdee = (bmr * (profileResponse['activity_level'] == 'Active' ? 1.55 : 1.2)).toInt();
       }
 
-      // Calcolo Spese e Calorie di OGGI
+      // Calcoliamo i totali di OGGI per le barre di progresso
       double spentToday = 0.0;
       int kcalToday = 0;
       final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
       
-      for (var log in logs) {
+      for (var log in logsResponse) {
         if (log['date'].toString().startsWith(todayStr)) {
            if (log['log_type'] == 'expense') {
              spentToday += (log['amount_saved'] as num).toDouble();
            }
+           // Futuro: implementare somma calorie qui
         }
       }
 
-      // Preparazione Payload per Python
-      List<Map<String, dynamic>> expensesList = (expenses as List).map((e) => {
-        "id": e['id'], "name": e['name'], "amount": (e['amount'] as num).toDouble(),
+      // 3. COSTRUZIONE PAYLOAD (Mapping per Pydantic v8.0)
+      // Trasformiamo i dati Supabase nel formato esatto richiesto dal Backend Python
+      
+      // Mapping Spese
+      List<Map<String, dynamic>> expensesList = (expensesResponse as List).map((e) => {
+        "id": e['id'], 
+        "name": e['name'], 
+        "amount": (e['amount'] as num).toDouble(),
         "is_variable": e['is_variable'] ?? false,
         "min_amount": (e['min_amount'] as num?)?.toDouble() ?? 0.0,
         "max_amount": (e['max_amount'] as num?)?.toDouble() ?? 0.0,
-        "payment_months": e['payment_months'] ?? [], "due_day": e['due_day'] ?? 1
+        "payment_months": e['payment_months'] ?? [], 
+        "due_day": e['due_day'] ?? 1
       }).toList();
 
-      List<Map<String, dynamic>> recentLogsList = (logs as List).take(50).map((l) => {
-        "date": l['created_at'], "log_type": l['log_type'],
-        "amount": (l['amount_saved'] as num).toDouble(), "related_fixed_expense_id": l['related_fixed_expense_id']
+      // Mapping Log (Solo recenti per non intasare la banda)
+      List<Map<String, dynamic>> recentLogsList = (logsResponse as List).take(100).map((l) => {
+        "date": l['created_at'], 
+        "log_type": l['log_type'],
+        "amount": (l['amount_saved'] as num).toDouble(), 
+        "calories": 0, // Placeholder
+        "category": l['category'],
+        "related_fixed_expense_id": l['related_fixed_expense_id']
       }).toList();
 
-      final Map<String, dynamic> payload = {
-        "current_liquid_cash": (profile['current_savings'] as num?)?.toDouble() ?? 0.0,
-        "payday_day": profile['payday_day'] ?? 27,
-        "savings_goal_monthly": (profile['savings_goal'] as num?)?.toDouble() ?? 0.0,
-        "fixed_expenses": expensesList,
-        "recent_logs": recentLogsList,
-        "tdee": _tdee,
-        "calories_consumed_today": kcalToday
+      // Profilo Utente + Settings Psicologici
+      final Map<String, dynamic> userProfile = {
+        "id": userId,
+        "tdee_kcal": _tdee,
+        // IMPORTANTE: Inviamo il saldo attuale che include già le spese appena fatte
+        "current_liquid_balance": (profileResponse['current_savings'] as num?)?.toDouble() ?? 0.0,
+        "payday_day": profileResponse['payday_day'] ?? 27,
+        "preferences": {
+          "enable_windfall": true,
+          "weekend_multiplier": 1.5,
+          "sugar_tax_rate": 1.2,
+          "vice_strategy": "HARD",
+          "min_viable_sds": 5.0
+        }
       };
 
+      final payload = {
+        "profile": userProfile,
+        "expenses": expensesList,
+        "logs": recentLogsList
+      };
+
+      // 4. CHIAMATA API (Handshake con Python)
       final url = Uri.parse('https://leverage-backend-ht38.onrender.com/calculate-bio-solvency');
+      
+      print("Inviando dati al Brain v8..."); 
       final response = await http.post(
-        url, headers: {"Content-Type": "application/json"}, body: jsonEncode(payload),
+        url,
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode(payload),
       );
 
+      // 5. GESTIONE RISPOSTA
       if (response.statusCode == 200) {
         final result = jsonDecode(response.body);
+        
         if (mounted) {
           setState(() {
-            _financialSDS = (result['financial']['sds_daily'] as num).toDouble();
+            // Mapping KPI Finanziari
+            _financialSDS = (result['financial']['sds_today'] as num).toDouble();
             _financialStatus = result['financial']['status'];
             _daysToPayday = (result['financial']['days_until_payday'] as num).toInt();
             _pendingBills = (result['financial']['pending_bills_total'] as num).toDouble();
             
-            _caloricSDC = (result['biological']['sdc_daily_kcal'] as num).toInt();
+            // Mapping KPI Biologici
+            _caloricSDC = (result['biological']['sdc_remaining'] as num).toInt();
             
-            // Ora queste variabili esistono e non daranno errore
+            // Mapping KPI Psicologici
             _viceStatus = result['psychology']['vice_status'];
             _unlockCost = (result['psychology']['unlock_cost_kcal'] as num).toInt();
             _psychoMessage = result['psychology']['message'];
             
+            // Aggiornamento UI Locale
             _moneySpentToday = spentToday;
             _caloriesConsumedToday = kcalToday;
-
-            _allLogs = logs;
-            _userHabitsCache = habits;
+            _allLogs = logsResponse;
+            _userHabitsCache = habitsResponse;
             _updateSelectedDayLogs(_selectedDay);
+            
             _isLoading = false;
           });
         }
-      } else { throw Exception('API Error'); }
+      } else {
+        print("Errore API Body: ${response.body}");
+        throw Exception('Server Error: ${response.statusCode}');
+      }
 
     } catch (e) {
+      print("Errore Critico Dashboard: $e");
       if(mounted) setState(() => _isLoading = false);
-      print("Errore: $e");
     }
   }
 
+  /// Filtra i log per mostrare solo quelli del giorno selezionato sul calendario
   void _updateSelectedDayLogs(DateTime day) {
     setState(() {
       _selectedDayLogs = _allLogs.where((log) => isSameDay(DateTime.parse(log['date']), day)).toList();
     });
   }
 
+  /// Logica di Cancellazione con RIMBORSO
+  /// Se l'utente cancella una spesa, dobbiamo riaccreditare i soldi sul conto.
   Future<void> _deleteLog(String logId, String type, double amount) async {
     try {
       if (type == 'expense' || (type == 'vice_consumed' && amount < 0)) {
+        // amount è negativo nel log se è una spesa? Dipende dalla logica di salvataggio.
+        // Nel nostro caso 'amount_saved' per le spese è positivo (costo), quindi lo riaggiungiamo.
         await _refundUserBalance(amount);
       }
       await Supabase.instance.client.from('daily_logs').delete().eq('id', logId);
-      _fetchAndCalculate();
+      _fetchAndCalculate(); // Ricalcola tutto
     } catch (e) {
-      print(e);
+      print("Errore Delete: $e");
     }
   }
 
@@ -163,21 +229,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final userId = Supabase.instance.client.auth.currentUser!.id;
     final profile = await Supabase.instance.client.from('profiles').select('current_savings').eq('id', userId).single();
     double current = (profile['current_savings'] as num).toDouble();
+    
+    // Riaggiungiamo i soldi al saldo
     await Supabase.instance.client.from('profiles').update({'current_savings': current + amount}).eq('id', userId);
   }
 
+  // --- GESTIONE UI ---
+
   void _showAddLogModal() {
-    // Controllo Blocco Vizio
+    // Logica Gamification: Se il vizio è bloccato, mostriamo l'avviso
     if (_viceStatus == "LOCKED") {
        _showLockedDialog();
-       // Non blocchiamo l'apertura per permettere di registrare sport
     }
 
     showModalBottomSheet(
-      context: context, isScrollControlled: true, backgroundColor: const Color(0xFF1E1E1E),
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1E1E1E),
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(25))),
-      builder: (context) => Padding(padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom), child: SmartInputForm(userHabits: _userHabitsCache)),
-    ).then((val) { if (val == true) _fetchAndCalculate(); });
+      builder: (context) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: SmartInputForm(userHabits: _userHabitsCache),
+      ),
+    ).then((val) { 
+      // Se il form ritorna true (ha salvato), ricarichiamo i dati
+      if (val == true) _fetchAndCalculate(); 
+    });
   }
 
   void _showLockedDialog() {
@@ -194,7 +271,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   void _showInfo(String title, String body) {
     showDialog(context: context, builder: (ctx) => AlertDialog(
-      backgroundColor: const Color(0xFF1E1E1E), title: Text(title, style: const TextStyle(color: Colors.white)),
+      backgroundColor: const Color(0xFF1E1E1E), 
+      title: Text(title, style: const TextStyle(color: Colors.white)),
       content: Text(body, style: const TextStyle(color: Colors.white70)),
       actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Capito"))],
     ));
@@ -256,6 +334,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
     );
   }
+
+  // --- WIDGET GRAFICI ---
 
   Widget _buildSolvencyCockpit() {
     Color statusColor = const Color(0xFF00E676);
@@ -423,13 +503,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Card(
       color: Colors.white.withOpacity(0.05),
       margin: const EdgeInsets.only(bottom: 8),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: ListTile(
-        leading: CircleAvatar(backgroundColor: color.withOpacity(0.2), child: Icon(icon, color: color, size: 20)),
-        title: Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
-        subtitle: Text(subtitle, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        leading: Icon(icon, color: color),
+        title: Text(title, style: const TextStyle(color: Colors.white)),
+        subtitle: Text(subtitle, style: const TextStyle(color: Colors.grey)),
         trailing: IconButton(
-          icon: const Icon(Icons.delete_outline, color: Colors.white30, size: 18), 
+          icon: const Icon(Icons.delete, color: Colors.white30, size: 18), 
           onPressed: () => _deleteLog(log['id'], log['log_type'], (log['amount_saved'] as num).toDouble())
         ),
       ),
@@ -440,6 +519,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.edit_note, size: 50, color: Colors.white.withOpacity(0.1)), const SizedBox(height: 10), const Text("Nessun log oggi.", style: TextStyle(color: Colors.grey))]));
   }
 }
+
+/// ============================================================================
+/// SMART INPUT FORM (CON LOGICA DI AGGIORNAMENTO SALDO)
+/// ============================================================================
+/// Questo widget gestisce l'input dell'utente. 
+/// La sua responsabilità chiave è:
+/// 1. Raccogliere i dati.
+/// 2. Salvarli nel diario (Supabase).
+/// 3. AGGIORNARE IL SALDO (Supabase) se è una spesa.
+/// ============================================================================
 
 class SmartInputForm extends StatefulWidget {
   final List<dynamic> userHabits; 
@@ -487,11 +576,60 @@ class _SmartInputFormState extends State<SmartInputForm> {
     });
   }
 
+  // --- MOTORE DI AGGIORNAMENTO SALDO ---
+  // Questa funzione sottrae i soldi dal conto corrente dell'utente
   Future<void> _updateUserBalance(String userId, double amountSpent) async {
     final profile = await Supabase.instance.client.from('profiles').select('current_savings').eq('id', userId).single();
     double current = (profile['current_savings'] as num).toDouble();
     double newBalance = current - amountSpent;
     await Supabase.instance.client.from('profiles').update({'current_savings': newBalance}).eq('id', userId);
+  }
+
+  // --- MOTORE DI PATTERN RECOGNITION (Auto-Discovery) ---
+  Future<void> _checkHiddenPattern(String habitName, String userId) async {
+    final existing = widget.userHabits.any((h) => h['name'].toString().toLowerCase() == habitName.toLowerCase());
+    if (existing) return;
+
+    final sevenDaysAgo = DateTime.now().subtract(const Duration(days: 7));
+    final logs = await Supabase.instance.client
+        .from('daily_logs')
+        .select()
+        .eq('user_id', userId)
+        .eq('sub_type', habitName)
+        .gte('created_at', sevenDaysAgo.toIso8601String());
+
+    if (logs.length >= 2 && mounted) {
+      _showDiscoveryDialog(habitName, userId);
+    }
+  }
+
+  void _showDiscoveryDialog(String habitName, String userId) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text("Pattern Rilevato", style: TextStyle(color: Colors.white)),
+        content: Text("Vuoi tracciare '$habitName'?", style: const TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("No")),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E676)),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await Supabase.instance.client.from('habits').insert({
+                'user_id': userId,
+                'name': habitName,
+                'cost_per_unit': double.tryParse(_customCostController.text) ?? 1.0,
+                'current_daily_quantity': 1,
+                'target_daily_quantity': 0
+              });
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("$habitName tracciato!")));
+            }, 
+            child: const Text("Sì, traccia", style: TextStyle(color: Colors.black))
+          )
+        ],
+      ),
+    );
   }
 
   Future<void> _saveLog() async {
@@ -522,14 +660,17 @@ class _SmartInputFormState extends State<SmartInputForm> {
       data['amount_saved'] = delta * _unitCost; 
       data['sub_type'] = _customHabitName;
       data['category'] = 'Vizio';
-      amountSpentReal = consumed * _unitCost;
+      
+      // Se il delta è negativo (ho consumato di più), non scaliamo soldi dal conto automaticamente
+      // perché il vizio potrebbe essere già stato pagato in "spese".
+      // Se volessimo essere rigorosi: amountSpentReal = consumed * _unitCost;
 
     } else if (_selectedType == 'expense') {
       double amount = double.tryParse(_amountController.text.replaceAll(',', '.')) ?? 0.0;
       data['amount_saved'] = amount; 
       data['category'] = _expenseCategory;
       data['is_necessary'] = _isNecessary;
-      amountSpentReal = amount;
+      amountSpentReal = amount; // Questa è sicuramente un'uscita di cassa
     } else if (_selectedType == 'workout') {
       data['sub_type'] = _workoutType;
       data['duration_min'] = _duration;
@@ -537,10 +678,18 @@ class _SmartInputFormState extends State<SmartInputForm> {
 
     try {
       await Supabase.instance.client.from('daily_logs').insert(data);
+      
+      // TRIGGER DI PAGAMENTO: Se è una spesa, aggiorniamo il saldo
       if (amountSpentReal > 0) {
         await _updateUserBalance(userId, amountSpentReal);
       }
-      if (mounted) Navigator.pop(context, true); 
+
+      // TRIGGER DI DISCOVERY
+      if (_selectedType == 'vice_consumed') {
+        await _checkHiddenPattern(_customHabitName, userId);
+      }
+
+      if (mounted) Navigator.pop(context, true); // Ritorna true per forzare il refresh
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Errore: $e")));
     } finally {
