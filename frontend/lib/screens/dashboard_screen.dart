@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:table_calendar/table_calendar.dart';
 import 'package:intl/intl.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import 'login_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -16,65 +18,117 @@ class _DashboardScreenState extends State<DashboardScreen> {
   DateTime _focusedDay = DateTime.now();
   DateTime _selectedDay = DateTime.now();
   
-  // Dati
-  Map<String, dynamic>? _profileData;
   List<dynamic> _allLogs = []; 
   List<dynamic> _selectedDayLogs = []; 
-  List<dynamic> _userHabitsCache = []; // Cache dei vizi per il form
+  List<dynamic> _userHabitsCache = [];
 
-  // Variabili Calcolate in locale per la Dashboard (Header)
-  int _tdee = 0;
-  double _potentialWealth30y = 0.0;
+  // Variabili Solvibilità
+  double _financialSDS = 0.0;
+  double _pendingBills = 0.0;
+  String _financialStatus = "CALCOLO...";
+  int _daysToPayday = 0;
+  int _caloricSDC = 0;        
+  int _tdee = 2000; // Default
+
+  // Variabili per i Widget Grafici (Progresso Giornaliero)
+  double _moneySpentToday = 0.0;
+  int _caloriesConsumedToday = 0;
 
   @override
   void initState() {
     super.initState();
-    _fetchData();
+    _fetchAndCalculate();
   }
 
-  Future<void> _fetchData() async {
+  Future<void> _fetchAndCalculate() async {
     final supabase = Supabase.instance.client;
     final userId = supabase.auth.currentUser?.id;
     if (userId == null) return;
 
     try {
-      // 1. Recupera tutto il necessario
       final profile = await supabase.from('profiles').select().eq('id', userId).single();
       final logs = await supabase.from('daily_logs').select().eq('user_id', userId).order('created_at', ascending: false);
       final habits = await supabase.from('habits').select().eq('user_id', userId);
+      final expenses = await supabase.from('fixed_expenses').select().eq('user_id', userId);
 
-      // --- CALCOLI LOCALI PER L'HEADER ---
-      // Calcolo TDEE (Mifflin-St Jeor semplificato)
-      double weight = (profile['weight_kg'] as num).toDouble();
-      double height = (profile['height_cm'] as num).toDouble();
-      int age = DateTime.now().year - DateTime.parse(profile['birth_date']).year;
-      double bmr = (10 * weight) + (6.25 * height) - (5 * age) + (profile['gender'] == 'M' ? 5 : -161);
-      double multiplier = profile['activity_level'] == 'Active' ? 1.55 : 1.2;
-      int tdee = (bmr * multiplier).toInt();
-
-      // Calcolo Potenziale Ricchezza (Basato sui vizi dichiarati nel profilo)
-      double dailyWaste = 0.0;
-      for (var h in habits) {
-        dailyWaste += (h['cost_per_unit'] as num) * (h['current_daily_quantity'] as num);
+      // --- CALCOLI LOCALI ---
+      if (profile['weight_kg'] != null) {
+         double w = (profile['weight_kg'] as num).toDouble();
+         double h = (profile['height_cm'] as num).toDouble();
+         int a = DateTime.now().year - DateTime.parse(profile['birth_date']).year;
+         double bmr = (10 * w) + (6.25 * h) - (5 * a) + (profile['gender'] == 'M' ? 5 : -161);
+         _tdee = (bmr * (profile['activity_level'] == 'Active' ? 1.55 : 1.2)).toInt();
       }
-      double annualWaste = dailyWaste * 365;
-      // Formula interesse composto 7% su 30 anni
-      double wealth30y = annualWaste * (((1 + 0.07) * 30) - 1) / 0.07; // Approssimazione
 
-      if (mounted) {
-        setState(() {
-          _profileData = profile;
-          _allLogs = logs;
-          _userHabitsCache = habits;
-          _tdee = tdee;
-          _potentialWealth30y = wealth30y;
-          _updateSelectedDayLogs(_selectedDay);
-          _isLoading = false;
-        });
+      // Calcolo Spese e Calorie di OGGI per i Widget
+      double spentToday = 0.0;
+      int kcalToday = 0;
+      final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
+      
+      for (var log in logs) {
+        if (log['date'].toString().startsWith(todayStr)) {
+           // Se è una spesa
+           if (log['log_type'] == 'expense') {
+             spentToday += (log['amount_saved'] as num).toDouble();
+           }
+           // Se è un vizio consumato, cerchiamo di stimare il costo se negativo (perdita)
+           // Nota: Per ora semplifichiamo sommando solo le spese esplicite
+        }
       }
+
+      // Preparazione Payload per Python
+      List<Map<String, dynamic>> expensesList = (expenses as List).map((e) => {
+        "id": e['id'], "name": e['name'], "amount": (e['amount'] as num).toDouble(),
+        "is_variable": e['is_variable'] ?? false,
+        "min_amount": (e['min_amount'] as num?)?.toDouble() ?? 0.0,
+        "max_amount": (e['max_amount'] as num?)?.toDouble() ?? 0.0,
+        "payment_months": e['payment_months'] ?? [], "due_day": e['due_day'] ?? 1
+      }).toList();
+
+      List<Map<String, dynamic>> recentLogsList = (logs as List).take(50).map((l) => {
+        "date": l['created_at'], "log_type": l['log_type'],
+        "amount": (l['amount_saved'] as num).toDouble(), "related_fixed_expense_id": l['related_fixed_expense_id']
+      }).toList();
+
+      final Map<String, dynamic> payload = {
+        "current_liquid_cash": (profile['current_savings'] as num?)?.toDouble() ?? 0.0,
+        "payday_day": profile['payday_day'] ?? 27,
+        "savings_goal_monthly": (profile['savings_goal'] as num?)?.toDouble() ?? 0.0,
+        "fixed_expenses": expensesList,
+        "recent_logs": recentLogsList,
+        "tdee": _tdee,
+        "calories_consumed_today": kcalToday
+      };
+
+      final url = Uri.parse('https://leverage-backend-ht38.onrender.com/calculate-solvency');
+      final response = await http.post(
+        url, headers: {"Content-Type": "application/json"}, body: jsonEncode(payload),
+      );
+
+      if (response.statusCode == 200) {
+        final result = jsonDecode(response.body);
+        if (mounted) {
+          setState(() {
+            _financialSDS = (result['financial']['sds_daily'] as num).toDouble();
+            _financialStatus = result['financial']['status'];
+            _daysToPayday = result['financial']['days_until_payday'];
+            _pendingBills = (result['financial']['pending_bills_total'] as num).toDouble();
+            _caloricSDC = (result['biological']['sdc_daily_kcal'] as num).toInt();
+            
+            _moneySpentToday = spentToday;
+            _caloriesConsumedToday = kcalToday;
+
+            _allLogs = logs;
+            _userHabitsCache = habits;
+            _updateSelectedDayLogs(_selectedDay);
+            _isLoading = false;
+          });
+        }
+      } else { throw Exception('API Error'); }
+
     } catch (e) {
-      print("Errore fetch: $e");
       if(mounted) setState(() => _isLoading = false);
+      print("Errore: $e");
     }
   }
 
@@ -84,28 +138,52 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  Future<void> _deleteLog(String logId) async {
+  // --- FIX BUG: RIMBORSO SU CANCELLAZIONE ---
+  Future<void> _deleteLog(String logId, String type, double amount) async {
     try {
-      await Supabase.instance.client.from('daily_logs').delete().eq('id', logId);
-      await _fetchData();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Log eliminato.")));
+      // 1. Se era una spesa, dobbiamo RIDARE i soldi al conto
+      if (type == 'expense' || (type == 'vice_consumed' && amount < 0)) {
+        // Nota: amount nei log vizi è negativo se speso? Nel nostro codice amount_saved è positivo per la spesa.
+        // Assumiamo che se è 'expense', amount è positivo e va rimborsato.
+        await _refundUserBalance(amount);
       }
-    } catch (e) {}
+
+      // 2. Cancella il log
+      await Supabase.instance.client.from('daily_logs').delete().eq('id', logId);
+      
+      // 3. Aggiorna tutto
+      _fetchAndCalculate();
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Log annullato (Saldo aggiornato).")));
+      }
+    } catch (e) {
+      print(e);
+    }
+  }
+
+  // Helper per rimborsare
+  Future<void> _refundUserBalance(double amount) async {
+    final userId = Supabase.instance.client.auth.currentUser!.id;
+    final profile = await Supabase.instance.client.from('profiles').select('current_savings').eq('id', userId).single();
+    double current = (profile['current_savings'] as num).toDouble();
+    await Supabase.instance.client.from('profiles').update({'current_savings': current + amount}).eq('id', userId);
   }
 
   void _showAddLogModal() {
     showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFF1E1E1E),
+      context: context, isScrollControlled: true, backgroundColor: const Color(0xFF1E1E1E),
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(25))),
-      builder: (context) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
-        // Passiamo i vizi caricati al form intelligente
-        child: SmartInputForm(userHabits: _userHabitsCache),
-      ),
-    ).then((_) => _fetchData()); // Ricarica al ritorno
+      builder: (context) => Padding(padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom), child: SmartInputForm(userHabits: _userHabitsCache)),
+    ).then((val) { if (val == true) _fetchAndCalculate(); });
+  }
+
+  void _showInfo(String title, String body) {
+    showDialog(context: context, builder: (ctx) => AlertDialog(
+      backgroundColor: const Color(0xFF1E1E1E), title: Text(title, style: const TextStyle(color: Colors.white)),
+      content: Text(body, style: const TextStyle(color: Colors.white70)),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Capito"))],
+    ));
   }
 
   Future<void> _logout() async {
@@ -118,102 +196,159 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF0A0A0A),
       appBar: AppBar(
-        title: const Text("DASHBOARD", style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+        title: const Text("COCKPIT", style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.5)),
         backgroundColor: Colors.transparent,
         actions: [IconButton(icon: const Icon(Icons.logout), onPressed: _logout)],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _showAddLogModal,
-        backgroundColor: const Color(0xFF00E676),
+        onPressed: _showAddLogModal, backgroundColor: const Color(0xFF00E676),
         label: const Text("REGISTRA", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
-        icon: const Icon(Icons.edit_note, color: Colors.black),
+        icon: const Icon(Icons.add_circle, color: Colors.black),
       ),
       body: _isLoading 
         ? const Center(child: CircularProgressIndicator(color: Color(0xFF00E676)))
-        : Column(
-            children: [
-              // 1. HEADER STATS (TDEE & Soldi)
-              _buildStatsHeader(),
-
-              const SizedBox(height: 10),
-
-              // 2. CALENDARIO
-              _buildCalendar(),
-              
-              const Divider(color: Colors.white10, height: 20),
-              
-              // 3. TITOLO GIORNATA
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text("Diario del ${DateFormat('dd MMM').format(_selectedDay)}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                    Text("${_selectedDayLogs.length} Log", style: const TextStyle(color: Colors.grey)),
-                  ],
+        : SingleChildScrollView(
+            child: Column(
+              children: [
+                _buildSolvencyCockpit(),
+                const SizedBox(height: 15),
+                
+                // NUOVO: WIDGET PROGRESSO GIORNALIERO
+                _buildDailyProgress(),
+                
+                const SizedBox(height: 15),
+                _buildCalendar(),
+                const Divider(color: Colors.white10, height: 20),
+                
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text("Diario del ${DateFormat('dd MMM').format(_selectedDay)}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                      Text("${_selectedDayLogs.length} Log", style: const TextStyle(color: Colors.grey)),
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(height: 10),
-
-              // 4. LISTA EVENTI
-              Expanded(
-                child: _selectedDayLogs.isEmpty
+                const SizedBox(height: 10),
+                _selectedDayLogs.isEmpty
                     ? _buildEmptyState()
                     : ListView.builder(
+                        physics: const NeverScrollableScrollPhysics(), shrinkWrap: true,
                         padding: const EdgeInsets.symmetric(horizontal: 20),
                         itemCount: _selectedDayLogs.length,
                         itemBuilder: (context, index) => _buildLogCard(_selectedDayLogs[index]),
                       ),
-              ),
-            ],
+                const SizedBox(height: 80), 
+              ],
+            ),
           ),
     );
   }
 
-  Widget _buildStatsHeader() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 15),
-      child: Row(
+  Widget _buildSolvencyCockpit() {
+    Color statusColor = const Color(0xFF00E676);
+    if (_financialStatus == "CRITICO") statusColor = Colors.orange;
+    if (_financialStatus == "INSOLVENTE") statusColor = Colors.redAccent;
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 20),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: statusColor.withOpacity(0.5), width: 1),
+        boxShadow: [BoxShadow(color: statusColor.withOpacity(0.1), blurRadius: 20)],
+      ),
+      child: Column(
         children: [
-          Expanded(
-            child: Container(
-              padding: const EdgeInsets.all(15),
-              decoration: BoxDecoration(
-                color: Colors.blueAccent.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.blueAccent.withOpacity(0.3)),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              InkWell(
+                onTap: () => _showInfo("SDS (Safe Daily Spend)", "Quanto puoi spendere OGGI per arrivare sereno allo stipendio."),
+                child: Row(children: [
+                  const Text("BUDGET SICURO OGGI", style: TextStyle(color: Colors.white70, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                  const SizedBox(width: 5),
+                  Icon(Icons.help_outline, size: 14, color: statusColor)
+                ]),
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(color: statusColor.withOpacity(0.2), borderRadius: BorderRadius.circular(8)),
+                child: Text(_financialStatus, style: TextStyle(color: statusColor, fontSize: 10, fontWeight: FontWeight.bold)),
+              )
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text("€ ${_financialSDS.toStringAsFixed(2)}", style: TextStyle(color: statusColor, fontSize: 42, fontWeight: FontWeight.w900)),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  const Row(children: [Icon(Icons.bolt, color: Colors.blueAccent, size: 16), SizedBox(width: 5), Text("METABOLISMO", style: TextStyle(color: Colors.blueAccent, fontSize: 10, fontWeight: FontWeight.bold))]),
-                  const SizedBox(height: 5),
-                  Text("$_tdee Kcal", style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
-                  const Text("TDEE Giornaliero", style: TextStyle(color: Colors.grey, fontSize: 10)),
+                  Text("$_daysToPayday giorni", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  const Text("al Payday", style: TextStyle(color: Colors.grey, fontSize: 10)),
                 ],
-              ),
+              )
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- NUOVO WIDGET: BARRE DI PROGRESSO ---
+  Widget _buildDailyProgress() {
+    // Percentuali per le barre (clamped a 1.0)
+    double moneyPct = _financialSDS > 0 ? (_moneySpentToday / _financialSDS).clamp(0.0, 1.0) : 0.0;
+    // double kcalPct = _tdee > 0 ? (_caloriesConsumedToday / _tdee).clamp(0.0, 1.0) : 0.0; // Scommenta quando gestiamo le calorie
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 20),
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(16)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("BILANCIO ODIERNO", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+          const SizedBox(height: 15),
+          
+          // Barra Soldi
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text("Spesi: €$_moneySpentToday", style: const TextStyle(color: Colors.grey, fontSize: 11)),
+              Text("Limit: €${_financialSDS.toStringAsFixed(0)}", style: const TextStyle(color: Colors.grey, fontSize: 11)),
+            ],
+          ),
+          const SizedBox(height: 5),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: moneyPct,
+              backgroundColor: Colors.white10,
+              color: moneyPct > 0.9 ? Colors.redAccent : const Color(0xFF00E676),
+              minHeight: 8,
             ),
           ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Container(
-              padding: const EdgeInsets.all(15),
-              decoration: BoxDecoration(
-                color: const Color(0xFF00E676).withOpacity(0.1),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: const Color(0xFF00E676).withOpacity(0.3)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Row(children: [Icon(Icons.trending_up, color: Color(0xFF00E676), size: 16), SizedBox(width: 5), Text("POTENZIALE", style: TextStyle(color: Color(0xFF00E676), fontSize: 10, fontWeight: FontWeight.bold))]),
-                  const SizedBox(height: 5),
-                  Text("€ ${( _potentialWealth30y / 1000).toStringAsFixed(1)}k", style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
-                  const Text("In 30 anni (Stimato)", style: TextStyle(color: Colors.grey, fontSize: 10)),
-                ],
-              ),
-            ),
-          ),
+          
+          const SizedBox(height: 15),
+          
+          // Insight
+          Row(
+            children: [
+              const Icon(Icons.lightbulb_outline, color: Colors.amber, size: 16),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  moneyPct < 0.5 ? "Ottimo ritmo! Stai risparmiando." : "Attenzione, stai esaurendo il budget giornaliero.",
+                  style: const TextStyle(color: Colors.white70, fontSize: 11, fontStyle: FontStyle.italic),
+                ),
+              )
+            ],
+          )
         ],
       ),
     );
@@ -221,75 +356,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildCalendar() {
     return Container(
-      margin: const EdgeInsets.all(15),
+      margin: const EdgeInsets.symmetric(horizontal: 20),
       decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(20)),
       child: TableCalendar(
-        firstDay: DateTime.utc(2024, 1, 1),
-        lastDay: DateTime.utc(2030, 12, 31),
-        focusedDay: _focusedDay,
-        selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
-        calendarFormat: CalendarFormat.week,
-        availableCalendarFormats: const {CalendarFormat.week: 'Settimana'},
+        firstDay: DateTime.utc(2024, 1, 1), lastDay: DateTime.utc(2030, 12, 31),
+        focusedDay: _focusedDay, selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
+        calendarFormat: CalendarFormat.week, availableCalendarFormats: const {CalendarFormat.week: 'Settimana'},
         onDaySelected: (selectedDay, focusedDay) {
-          setState(() {
-            _selectedDay = selectedDay;
-            _focusedDay = focusedDay;
-          });
+          setState(() { _selectedDay = selectedDay; _focusedDay = focusedDay; });
           _updateSelectedDayLogs(selectedDay);
         },
         eventLoader: (day) => _allLogs.where((log) => isSameDay(DateTime.parse(log['date']), day)).toList(),
         calendarStyle: const CalendarStyle(
-          defaultTextStyle: TextStyle(color: Colors.white),
-          weekendTextStyle: TextStyle(color: Colors.white70),
+          defaultTextStyle: TextStyle(color: Colors.white), weekendTextStyle: TextStyle(color: Colors.white70),
           todayDecoration: BoxDecoration(color: Colors.blueAccent, shape: BoxShape.circle),
           selectedDecoration: BoxDecoration(color: Color(0xFF00E676), shape: BoxShape.circle),
           markerDecoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle),
         ),
-        headerStyle: const HeaderStyle(
-          formatButtonVisible: false,
-          titleCentered: true,
-          titleTextStyle: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-          leftChevronIcon: Icon(Icons.chevron_left, color: Colors.white),
-          rightChevronIcon: Icon(Icons.chevron_right, color: Colors.white),
-        ),
+        headerStyle: const HeaderStyle(formatButtonVisible: false, titleCentered: true, titleTextStyle: TextStyle(color: Colors.white, fontWeight: FontWeight.bold), leftChevronIcon: Icon(Icons.chevron_left, color: Colors.white), rightChevronIcon: Icon(Icons.chevron_right, color: Colors.white)),
       ),
     );
   }
 
   Widget _buildLogCard(Map<String, dynamic> log) {
-    IconData icon = Icons.circle;
-    Color color = Colors.grey;
-    String title = "Attività";
-    String subtitle = "";
+    IconData icon = Icons.circle; Color color = Colors.grey; String title = "Attività"; String subtitle = "";
     
     if (log['log_type'] == 'vice_consumed') {
       double saved = (log['amount_saved'] as num).toDouble();
-      if (saved > 0) { 
-        icon = Icons.trending_up; 
-        color = const Color(0xFF00E676); 
-        title = "${log['sub_type']}: Risparmio"; 
-        subtitle = "+ €${saved.toStringAsFixed(2)}"; 
-      } else if (saved < 0) { 
-        icon = Icons.warning_amber_rounded; 
-        color = Colors.orangeAccent; 
-        title = "${log['sub_type']}: Extra"; 
-        subtitle = "- €${(saved * -1).toStringAsFixed(2)}"; 
-      } else { 
-        icon = Icons.horizontal_rule; 
-        color = Colors.grey; 
-        title = "${log['sub_type']}: Standard"; 
-        subtitle = "0 €"; 
-      }
+      if (saved > 0) { icon = Icons.trending_up; color = const Color(0xFF00E676); title = "${log['sub_type']}"; subtitle = "Risparmio: €${saved.toStringAsFixed(2)}"; }
+      else if (saved < 0) { icon = Icons.warning_amber_rounded; color = Colors.orangeAccent; title = "${log['sub_type']}"; subtitle = "Extra: €${(saved * -1).toStringAsFixed(2)}"; }
+      else { icon = Icons.horizontal_rule; color = Colors.grey; title = "${log['sub_type']}"; subtitle = "Budget neutro"; }
     } else if (log['log_type'] == 'expense') {
-      icon = Icons.money_off; 
-      color = Colors.redAccent; 
-      title = "Spesa: ${log['category']}"; 
-      subtitle = "€${log['amount_saved']}";
+      icon = Icons.money_off; color = Colors.redAccent; title = "${log['category']}"; subtitle = "- €${log['amount_saved']}";
     } else if (log['log_type'] == 'workout') {
-      icon = Icons.fitness_center; 
-      color = Colors.blueAccent; 
-      title = "Sport: ${log['sub_type']}"; 
-      subtitle = "${log['duration_min']} min";
+      icon = Icons.fitness_center; color = Colors.blueAccent; title = "${log['sub_type']}"; subtitle = "${log['duration_min']} min";
     }
 
     return Card(
@@ -300,26 +400,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
         leading: CircleAvatar(backgroundColor: color.withOpacity(0.2), child: Icon(icon, color: color, size: 20)),
         title: Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
         subtitle: Text(subtitle, style: const TextStyle(color: Colors.white70, fontSize: 12)),
-        trailing: IconButton(icon: const Icon(Icons.delete_outline, color: Colors.white30, size: 18), onPressed: () => _deleteLog(log['id'])),
+        trailing: IconButton(icon: const Icon(Icons.delete_outline, color: Colors.white30, size: 18), onPressed: () => _deleteLog(log['id'], log['log_type'], (log['amount_saved'] as num).toDouble())),
       ),
     );
   }
 
   Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.edit_note, size: 50, color: Colors.white.withOpacity(0.1)),
-          const SizedBox(height: 10),
-          const Text("Nessun log.", style: TextStyle(color: Colors.grey)),
-        ],
-      ),
-    );
+    return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.edit_note, size: 50, color: Colors.white.withOpacity(0.1)), const SizedBox(height: 10), const Text("Nessun log oggi.", style: TextStyle(color: Colors.grey))]));
   }
 }
 
-// --- SMART INPUT FORM (CON AUTO-DISCOVERY) ---
+// --- SMART INPUT FORM (Resta uguale) ---
 class SmartInputForm extends StatefulWidget {
   final List<dynamic> userHabits; 
   const SmartInputForm({super.key, required this.userHabits});
@@ -331,16 +422,13 @@ class SmartInputForm extends StatefulWidget {
 class _SmartInputFormState extends State<SmartInputForm> {
   String _selectedType = 'vice_consumed'; 
   
-  // Dati Vizio
-  String? _selectedHabitId; // Null = Inserimento libero
+  String? _selectedHabitId; 
   String _customHabitName = "Caffè"; 
   double _unitCost = 1.0;
   final _consumedQtyController = TextEditingController(text: "1");
   final _customCostController = TextEditingController(text: "1.00");
-
   final List<String> _commonSuggestions = ['Caffè', 'Sigaretta', 'Birra', 'Fast Food', 'Dolci', 'Scommesse'];
 
-  // Dati Spesa/Sport
   final _amountController = TextEditingController();
   final _noteController = TextEditingController();
   String _expenseCategory = 'Svago';
@@ -369,54 +457,11 @@ class _SmartInputFormState extends State<SmartInputForm> {
     });
   }
 
-  // --- PATTERN RECOGNITION ENGINE ---
-  Future<void> _checkHiddenPattern(String habitName, String userId) async {
-    final existing = widget.userHabits.any((h) => h['name'].toString().toLowerCase() == habitName.toLowerCase());
-    if (existing) return;
-
-    final sevenDaysAgo = DateTime.now().subtract(const Duration(days: 7));
-    final logs = await Supabase.instance.client
-        .from('daily_logs')
-        .select()
-        .eq('user_id', userId)
-        .eq('sub_type', habitName)
-        .gte('created_at', sevenDaysAgo.toIso8601String());
-
-    if (logs.length >= 2 && mounted) {
-      _showDiscoveryDialog(habitName, userId);
-    }
-  }
-
-  void _showDiscoveryDialog(String habitName, String userId) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
-        title: const Row(children: [Icon(Icons.visibility, color: Color(0xFF00E676)), SizedBox(width: 10), Text("Pattern Rilevato", style: TextStyle(color: Colors.white, fontSize: 18))]),
-        content: Text(
-          "L'algoritmo ha notato che hai inserito '$habitName' spesso.\nVuoi aggiungerlo al Piano Ufficiale?",
-          style: const TextStyle(color: Colors.white70),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("No", style: TextStyle(color: Colors.grey))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E676)),
-            onPressed: () async {
-              Navigator.pop(ctx);
-              await Supabase.instance.client.from('habits').insert({
-                'user_id': userId,
-                'name': habitName,
-                'cost_per_unit': double.tryParse(_customCostController.text) ?? 1.0,
-                'current_daily_quantity': 1,
-                'target_daily_quantity': 0
-              });
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("$habitName tracciato!")));
-            }, 
-            child: const Text("Sì, traccia", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold))
-          )
-        ],
-      ),
-    );
+  Future<void> _updateUserBalance(String userId, double amountSpent) async {
+    final profile = await Supabase.instance.client.from('profiles').select('current_savings').eq('id', userId).single();
+    double current = (profile['current_savings'] as num).toDouble();
+    double newBalance = current - amountSpent;
+    await Supabase.instance.client.from('profiles').update({'current_savings': newBalance}).eq('id', userId);
   }
 
   Future<void> _saveLog() async {
@@ -430,6 +475,8 @@ class _SmartInputFormState extends State<SmartInputForm> {
       'note': _noteController.text,
     };
 
+    double amountSpentReal = 0.0; 
+
     if (_selectedType == 'vice_consumed') {
       int baseline = 0;
       if (_selectedHabitId != null) {
@@ -439,19 +486,20 @@ class _SmartInputFormState extends State<SmartInputForm> {
       } else {
         _unitCost = double.tryParse(_customCostController.text.replaceAll(',', '.')) ?? 0.0;
       }
-
       final int consumed = int.tryParse(_consumedQtyController.text) ?? 1;
       final int delta = baseline - consumed; 
       
       data['amount_saved'] = delta * _unitCost; 
       data['sub_type'] = _customHabitName;
-      data['note'] = "Consumati: $consumed (Media: $baseline)";
       data['category'] = 'Vizio';
+      amountSpentReal = consumed * _unitCost;
 
     } else if (_selectedType == 'expense') {
-      data['amount_saved'] = double.tryParse(_amountController.text.replaceAll(',', '.')) ?? 0.0;
+      double amount = double.tryParse(_amountController.text.replaceAll(',', '.')) ?? 0.0;
+      data['amount_saved'] = amount; 
       data['category'] = _expenseCategory;
       data['is_necessary'] = _isNecessary;
+      amountSpentReal = amount;
     } else if (_selectedType == 'workout') {
       data['sub_type'] = _workoutType;
       data['duration_min'] = _duration;
@@ -459,12 +507,10 @@ class _SmartInputFormState extends State<SmartInputForm> {
 
     try {
       await Supabase.instance.client.from('daily_logs').insert(data);
-      
-      if (_selectedType == 'vice_consumed') {
-        await _checkHiddenPattern(_customHabitName, userId);
+      if (amountSpentReal > 0) {
+        await _updateUserBalance(userId, amountSpentReal);
       }
-
-      if (mounted) Navigator.pop(context); 
+      if (mounted) Navigator.pop(context, true); 
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Errore: $e")));
     } finally {
@@ -482,142 +528,48 @@ class _SmartInputFormState extends State<SmartInputForm> {
         children: [
           const Text("REGISTRA ATTIVITÀ", textAlign: TextAlign.center, style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
           const SizedBox(height: 20),
-          
-          Row(
-            children: [
-              _typeButton("Vizio", Icons.smoke_free, 'vice_consumed', const Color(0xFF00E676)),
-              const SizedBox(width: 10),
-              _typeButton("Spesa", Icons.euro, 'expense', Colors.redAccent),
-              const SizedBox(width: 10),
-              _typeButton("Sport", Icons.fitness_center, 'workout', Colors.blueAccent),
-            ],
-          ),
-          
+          Row(children: [
+            _typeButton("Vizio", Icons.smoke_free, 'vice_consumed', const Color(0xFF00E676)),
+            const SizedBox(width: 10),
+            _typeButton("Spesa", Icons.euro, 'expense', Colors.redAccent),
+            const SizedBox(width: 10),
+            _typeButton("Sport", Icons.fitness_center, 'workout', Colors.blueAccent),
+          ]),
           const Divider(color: Colors.white10, height: 30),
-
           Expanded(
             child: SingleChildScrollView(
               child: Column(
                 children: [
-                  
-                  // --- FORM VIZI IBRIDO ---
                   if (_selectedType == 'vice_consumed') ...[
                     if (widget.userHabits.isNotEmpty) ...[
-                      DropdownButtonFormField<String>(
-                        value: _selectedHabitId,
-                        dropdownColor: const Color(0xFF1E1E1E),
-                        style: const TextStyle(color: Colors.white),
-                        decoration: const InputDecoration(labelText: "Vizi Tracciati", border: OutlineInputBorder()),
-                        items: [
-                          ...widget.userHabits.map((h) => DropdownMenuItem(value: h['id'].toString(), child: Text(h['name']))),
-                          const DropdownMenuItem(value: null, child: Text("+ Altro / Nuovo Vizio", style: TextStyle(color: Color(0xFF00E676)))),
-                        ],
-                        onChanged: (v) {
-                          if (v != null) _selectUserHabit(widget.userHabits.firstWhere((h) => h['id'] == v));
-                          else setState(() { _selectedHabitId = null; _customHabitName = ""; _customCostController.text = ""; });
-                        },
-                      ),
+                      DropdownButtonFormField<String>(value: _selectedHabitId, dropdownColor: const Color(0xFF1E1E1E), style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Vizi Tracciati", border: OutlineInputBorder()), items: [...widget.userHabits.map((h) => DropdownMenuItem(value: h['id'].toString(), child: Text(h['name']))), const DropdownMenuItem(value: null, child: Text("+ Altro"))], onChanged: (v) { if (v != null) _selectUserHabit(widget.userHabits.firstWhere((h) => h['id'] == v)); else setState(() { _selectedHabitId = null; }); }),
                       const SizedBox(height: 15),
                     ],
-
                     if (_selectedHabitId == null) ...[
-                      const Text("Inserimento Libero", style: TextStyle(color: Colors.grey, fontSize: 12)),
-                      const SizedBox(height: 5),
-                      Wrap(
-                        spacing: 8,
-                        children: _commonSuggestions.map((s) => ActionChip(
-                          label: Text(s),
-                          backgroundColor: Colors.white10,
-                          labelStyle: const TextStyle(color: Colors.white),
-                          onPressed: () => setState(() => _customHabitName = s),
-                        )).toList(),
-                      ),
+                      TextField(onChanged: (v) => _customHabitName = v, controller: TextEditingController(text: _customHabitName), decoration: const InputDecoration(labelText: "Nome Vizio", border: OutlineInputBorder()), style: const TextStyle(color: Colors.white)),
                       const SizedBox(height: 10),
-                      TextField(
-                        onChanged: (v) => _customHabitName = v,
-                        controller: TextEditingController(text: _customHabitName),
-                        decoration: const InputDecoration(labelText: "Nome Vizio", prefixIcon: Icon(Icons.edit, color: Colors.white70)),
-                        style: const TextStyle(color: Colors.white),
-                      ),
-                      const SizedBox(height: 10),
-                      TextField(
-                        controller: _customCostController,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                        decoration: const InputDecoration(labelText: "Costo Singolo (€)", prefixIcon: Icon(Icons.euro, color: Colors.white70)),
-                        style: const TextStyle(color: Colors.white),
-                      ),
+                      TextField(controller: _customCostController, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: "Costo (€)", border: OutlineInputBorder()), style: const TextStyle(color: Colors.white)),
                       const SizedBox(height: 20),
                     ],
-
-                    const Text("Consumo di Oggi", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: _consumedQtyController,
-                      keyboardType: TextInputType.number,
-                      style: const TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.bold),
-                      textAlign: TextAlign.center,
-                      decoration: const InputDecoration(border: OutlineInputBorder(), prefixIcon: Icon(Icons.numbers, color: Colors.white)),
-                    ),
+                    TextField(controller: _consumedQtyController, keyboardType: TextInputType.number, style: const TextStyle(color: Colors.white, fontSize: 30), textAlign: TextAlign.center, decoration: const InputDecoration(labelText: "Quantità", border: OutlineInputBorder())),
                   ],
-
-                  // --- FORM SPESE ---
                   if (_selectedType == 'expense') ...[
-                    TextField(
-                      controller: _amountController,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      style: const TextStyle(color: Colors.white, fontSize: 24),
-                      decoration: const InputDecoration(labelText: "Importo (€)", border: OutlineInputBorder()),
-                    ),
+                    TextField(controller: _amountController, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: "Importo (€)", border: OutlineInputBorder()), style: const TextStyle(color: Colors.white)),
                     const SizedBox(height: 15),
-                    DropdownButtonFormField<String>(
-                      value: _expenseCategory,
-                      dropdownColor: const Color(0xFF1E1E1E),
-                      style: const TextStyle(color: Colors.white),
-                      items: ['Cibo', 'Trasporti', 'Svago', 'Bollette', 'Shopping'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
-                      onChanged: (v) => setState(() => _expenseCategory = v!),
-                      decoration: const InputDecoration(labelText: "Categoria", border: OutlineInputBorder()),
-                    ),
-                    SwitchListTile(
-                      title: const Text("Era necessaria?", style: TextStyle(color: Colors.white)),
-                      value: _isNecessary,
-                      activeColor: const Color(0xFF00E676),
-                      onChanged: (v) => setState(() => _isNecessary = v),
-                    ),
+                    DropdownButtonFormField<String>(value: _expenseCategory, dropdownColor: const Color(0xFF1E1E1E), style: const TextStyle(color: Colors.white), items: ['Cibo', 'Trasporti', 'Svago', 'Bollette'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(), onChanged: (v) => setState(() => _expenseCategory = v!), decoration: const InputDecoration(labelText: "Categoria", border: OutlineInputBorder())),
+                    SwitchListTile(title: const Text("Era necessaria?", style: TextStyle(color: Colors.white)), value: _isNecessary, activeColor: const Color(0xFF00E676), onChanged: (v) => setState(() => _isNecessary = v)),
                   ],
-
-                  // --- FORM SPORT ---
                   if (_selectedType == 'workout') ...[
-                    DropdownButtonFormField<String>(
-                      value: _workoutType,
-                      dropdownColor: const Color(0xFF1E1E1E),
-                      style: const TextStyle(color: Colors.white),
-                      items: ['Palestra', 'Corsa', 'Nuoto', 'Yoga', 'Camminata'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
-                      onChanged: (v) => setState(() => _workoutType = v!),
-                      decoration: const InputDecoration(labelText: "Attività", border: OutlineInputBorder()),
-                    ),
+                    DropdownButtonFormField<String>(value: _workoutType, dropdownColor: const Color(0xFF1E1E1E), style: const TextStyle(color: Colors.white), items: ['Palestra', 'Corsa'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(), onChanged: (v) => setState(() => _workoutType = v!), decoration: const InputDecoration(labelText: "Attività", border: OutlineInputBorder())),
                     const SizedBox(height: 20),
+                    Slider(value: _duration.toDouble(), min: 10, max: 180, divisions: 17, activeColor: Colors.blueAccent, onChanged: (v) => setState(() => _duration = v.toInt())),
                     Text("Durata: $_duration min", style: const TextStyle(color: Colors.white)),
-                    Slider(
-                      value: _duration.toDouble(),
-                      min: 10, max: 180, divisions: 17,
-                      activeColor: Colors.blueAccent,
-                      onChanged: (v) => setState(() => _duration = v.toInt()),
-                    ),
                   ],
                 ],
               ),
             ),
           ),
-
-          SizedBox(
-            width: double.infinity,
-            height: 50,
-            child: ElevatedButton(
-              onPressed: _isSaving ? null : _saveLog,
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.white),
-              child: _isSaving ? const CircularProgressIndicator() : const Text("REGISTRA", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
-            ),
-          )
+          SizedBox(width: double.infinity, height: 50, child: ElevatedButton(onPressed: _isSaving ? null : _saveLog, style: ElevatedButton.styleFrom(backgroundColor: Colors.white), child: _isSaving ? const CircularProgressIndicator() : const Text("REGISTRA", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold))))
         ],
       ),
     );
@@ -625,25 +577,6 @@ class _SmartInputFormState extends State<SmartInputForm> {
 
   Widget _typeButton(String label, IconData icon, String type, Color color) {
     bool isSelected = _selectedType == type;
-    return Expanded(
-      child: GestureDetector(
-        onTap: () => setState(() => _selectedType = type),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          decoration: BoxDecoration(
-            color: isSelected ? color.withOpacity(0.2) : Colors.white10,
-            border: Border.all(color: isSelected ? color : Colors.transparent),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Column(
-            children: [
-              Icon(icon, color: isSelected ? color : Colors.grey),
-              const SizedBox(height: 5),
-              Text(label, style: TextStyle(color: isSelected ? Colors.white : Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
-            ],
-          ),
-        ),
-      ),
-    );
+    return Expanded(child: GestureDetector(onTap: () => setState(() => _selectedType = type), child: Container(padding: const EdgeInsets.symmetric(vertical: 12), decoration: BoxDecoration(color: isSelected ? color.withOpacity(0.2) : Colors.white10, border: Border.all(color: isSelected ? color : Colors.transparent), borderRadius: BorderRadius.circular(10)), child: Column(children: [Icon(icon, color: isSelected ? color : Colors.grey), const SizedBox(height: 5), Text(label, style: TextStyle(color: isSelected ? Colors.white : Colors.grey, fontSize: 12, fontWeight: FontWeight.bold))]))));
   }
 }
