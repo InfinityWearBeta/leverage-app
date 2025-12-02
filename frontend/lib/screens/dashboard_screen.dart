@@ -22,17 +22,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<dynamic> _selectedDayLogs = []; 
   List<dynamic> _userHabitsCache = [];
 
-  // Variabili Solvibilità
-  double _financialSDS = 0.0;
-  double _pendingBills = 0.0;
-  String _financialStatus = "CALCOLO...";
+  // --- VARIABILI DI STATO (TUTTE QUELLE NECESSARIE) ---
+  double _financialSDS = 0.0;     // Safe Daily Spend
+  int _caloricSDC = 0;            // Safe Daily Calories
+  String _financialStatus = "..."; 
   int _daysToPayday = 0;
-  int _caloricSDC = 0;        
-  int _tdee = 2000; 
-
+  double _pendingBills = 0.0;
+  
   // Variabili Grafici giornalieri
   double _moneySpentToday = 0.0;
   int _caloriesConsumedToday = 0;
+  int _tdee = 2000; 
+
+  // Variabili Psicologia (QUELLLE CHE MANCAVANO)
+  String _viceStatus = "UNLOCKED"; 
+  int _unlockCost = 0;             
+  String _psychoMessage = "";      
 
   @override
   void initState() {
@@ -46,11 +51,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (userId == null) return;
 
     try {
+      // 1. RECUPERA DATI
       final profile = await supabase.from('profiles').select().eq('id', userId).single();
       final logs = await supabase.from('daily_logs').select().eq('user_id', userId).order('created_at', ascending: false);
       final habits = await supabase.from('habits').select().eq('user_id', userId);
       final expenses = await supabase.from('fixed_expenses').select().eq('user_id', userId);
 
+      // --- CALCOLI LOCALI ---
       if (profile['weight_kg'] != null) {
          double w = (profile['weight_kg'] as num).toDouble();
          double h = (profile['height_cm'] as num).toDouble();
@@ -59,6 +66,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
          _tdee = (bmr * (profile['activity_level'] == 'Active' ? 1.55 : 1.2)).toInt();
       }
 
+      // Calcolo Spese e Calorie di OGGI
       double spentToday = 0.0;
       int kcalToday = 0;
       final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
@@ -71,6 +79,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
       }
 
+      // Preparazione Payload per Python
       List<Map<String, dynamic>> expensesList = (expenses as List).map((e) => {
         "id": e['id'], "name": e['name'], "amount": (e['amount'] as num).toDouble(),
         "is_variable": e['is_variable'] ?? false,
@@ -94,7 +103,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         "calories_consumed_today": kcalToday
       };
 
-      final url = Uri.parse('https://leverage-backend-ht38.onrender.com/calculate-solvency');
+      final url = Uri.parse('https://leverage-backend-ht38.onrender.com/calculate-bio-solvency');
       final response = await http.post(
         url, headers: {"Content-Type": "application/json"}, body: jsonEncode(payload),
       );
@@ -105,9 +114,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
           setState(() {
             _financialSDS = (result['financial']['sds_daily'] as num).toDouble();
             _financialStatus = result['financial']['status'];
-            _daysToPayday = result['financial']['days_until_payday'];
+            _daysToPayday = (result['financial']['days_until_payday'] as num).toInt();
             _pendingBills = (result['financial']['pending_bills_total'] as num).toDouble();
+            
             _caloricSDC = (result['biological']['sdc_daily_kcal'] as num).toInt();
+            
+            // Ora queste variabili esistono e non daranno errore
+            _viceStatus = result['psychology']['vice_status'];
+            _unlockCost = (result['psychology']['unlock_cost_kcal'] as num).toInt();
+            _psychoMessage = result['psychology']['message'];
             
             _moneySpentToday = spentToday;
             _caloriesConsumedToday = kcalToday;
@@ -134,7 +149,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _deleteLog(String logId, String type, double amount) async {
     try {
-      // RIMBORSO: Se cancelli una spesa, riaggiungi i soldi al conto
       if (type == 'expense' || (type == 'vice_consumed' && amount < 0)) {
         await _refundUserBalance(amount);
       }
@@ -149,18 +163,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final userId = Supabase.instance.client.auth.currentUser!.id;
     final profile = await Supabase.instance.client.from('profiles').select('current_savings').eq('id', userId).single();
     double current = (profile['current_savings'] as num).toDouble();
-    
-    // Nota: amount qui è quello che avevi speso (positivo nel log), quindi lo riaggiungiamo.
-    // Se il log expense aveva amount 50, facciamo current + 50.
     await Supabase.instance.client.from('profiles').update({'current_savings': current + amount}).eq('id', userId);
   }
 
   void _showAddLogModal() {
+    // Controllo Blocco Vizio
+    if (_viceStatus == "LOCKED") {
+       _showLockedDialog();
+       // Non blocchiamo l'apertura per permettere di registrare sport
+    }
+
     showModalBottomSheet(
       context: context, isScrollControlled: true, backgroundColor: const Color(0xFF1E1E1E),
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(25))),
       builder: (context) => Padding(padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom), child: SmartInputForm(userHabits: _userHabitsCache)),
     ).then((val) { if (val == true) _fetchAndCalculate(); });
+  }
+
+  void _showLockedDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Row(children: [Icon(Icons.lock, color: Colors.redAccent), SizedBox(width: 10), Text("VIZIO BLOCCATO", style: TextStyle(color: Colors.white))]),
+        content: Text("Protocollo Hard Attivo.\n$_psychoMessage", style: const TextStyle(color: Colors.white70)),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Capito"))],
+      ),
+    );
   }
 
   void _showInfo(String title, String body) {
@@ -186,9 +215,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         actions: [IconButton(icon: const Icon(Icons.logout), onPressed: _logout)],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _showAddLogModal, backgroundColor: const Color(0xFF00E676),
-        label: const Text("REGISTRA", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
-        icon: const Icon(Icons.add_circle, color: Colors.black),
+        onPressed: _showAddLogModal, 
+        backgroundColor: _viceStatus == "LOCKED" ? Colors.grey : const Color(0xFF00E676),
+        label: Text(_viceStatus == "LOCKED" ? "SBLOCCA" : "REGISTRA", style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+        icon: Icon(_viceStatus == "LOCKED" ? Icons.lock : Icons.add_circle, color: Colors.black),
       ),
       body: _isLoading 
         ? const Center(child: CircularProgressIndicator(color: Color(0xFF00E676)))
@@ -457,7 +487,6 @@ class _SmartInputFormState extends State<SmartInputForm> {
     });
   }
 
-  // FUNZIONE CORRETTA: AGGIORNA IL SALDO
   Future<void> _updateUserBalance(String userId, double amountSpent) async {
     final profile = await Supabase.instance.client.from('profiles').select('current_savings').eq('id', userId).single();
     double current = (profile['current_savings'] as num).toDouble();
@@ -493,16 +522,14 @@ class _SmartInputFormState extends State<SmartInputForm> {
       data['amount_saved'] = delta * _unitCost; 
       data['sub_type'] = _customHabitName;
       data['category'] = 'Vizio';
-      // Se delta è positivo (risparmio) non scala nulla. Se delta è negativo (extra), non scala per ora.
-      // La spesa reale è il consumo totale.
-      // amountSpentReal = consumed * _unitCost; (Scommentare se vuoi scalare ogni caffè dal saldo)
+      amountSpentReal = consumed * _unitCost;
 
     } else if (_selectedType == 'expense') {
       double amount = double.tryParse(_amountController.text.replaceAll(',', '.')) ?? 0.0;
       data['amount_saved'] = amount; 
       data['category'] = _expenseCategory;
       data['is_necessary'] = _isNecessary;
-      amountSpentReal = amount; // Questa sicuramente va scalata
+      amountSpentReal = amount;
     } else if (_selectedType == 'workout') {
       data['sub_type'] = _workoutType;
       data['duration_min'] = _duration;
@@ -510,12 +537,9 @@ class _SmartInputFormState extends State<SmartInputForm> {
 
     try {
       await Supabase.instance.client.from('daily_logs').insert(data);
-      
-      // 🔥 LOGICA CRUCIALE: Aggiorna saldo se è una spesa
       if (amountSpentReal > 0) {
         await _updateUserBalance(userId, amountSpentReal);
       }
-
       if (mounted) Navigator.pop(context, true); 
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Errore: $e")));
