@@ -45,5 +45,12 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
-</dict>
+
+    <key>NSHealthShareUsageDescription</key>
+    <string>Leverage usa i tuoi dati biometrici (peso, passi) per calcolare il tuo metabolismo e il budget calorico giornaliero.</string>
+    <key>NSHealthUpdateUsageDescription</key>
+    <string>Leverage necessita di accesso per sincronizzare i dati biometrici nel tuo profilo.</string>
+    <key>NSMotionUsageDescription</key>
+    <string>Leverage usa i sensori di movimento per tracciare i passi.</string>
+    </dict>
 </plist>

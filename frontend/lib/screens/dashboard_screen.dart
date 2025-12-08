@@ -70,8 +70,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (value is double) return value.toInt();
     return 0;
   }
-
-  /// --------------------------------------------------------------------------
+/// --------------------------------------------------------------------------
   /// CORE: INVIO STATO AL BACKEND (Solvency Manager)
   /// --------------------------------------------------------------------------
   Future<void> _fetchAndCalculate() async {
@@ -96,6 +95,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
       }
 
+      // --- FIX v8.1: RECUPERO TDEE DINAMICO ---
+      // Se il TDEE non è ancora calcolato nel DB, usiamo 2000 come fallback sicuro.
+      final int userTdee = (profile['tdee_kcal'] as num?)?.toInt() ?? 2000; 
+
       // 3. COSTRUZIONE PAYLOAD v8.0 (Mapping complesso per Python)
       List<Map<String, dynamic>> expensesList = (expensesRaw as List).map((e) => {
         "id": e['id'], "name": e['name'], "amount": _safeDouble(e['amount']),
@@ -110,7 +113,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       final payload = {
         "profile": {
-            "id": userId, "tdee_kcal": 2000, "current_liquid_balance": _safeDouble(profile['current_savings']),
+            "id": userId, 
+            "tdee_kcal": userTdee, // <--- ORA È COLLEGATO AL DB
+            "current_liquid_balance": _safeDouble(profile['current_savings']),
             "payday_day": profile['payday_day'] ?? 27,
             "preferences": {"enable_windfall": true, "weekend_multiplier": 1.5, "sugar_tax_rate": 1.2, "vice_strategy": "HARD", "min_viable_sds": 5.0}
         },

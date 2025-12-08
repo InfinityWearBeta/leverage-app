@@ -1,5 +1,7 @@
 package com.example.frontend
 
-import io.flutter.embedding.android.FlutterActivity
+// CAMBIO IMPORTANTE: Usiamo FlutterFragmentActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 
-class MainActivity : FlutterActivity()
+class MainActivity: FlutterFragmentActivity() {
+}

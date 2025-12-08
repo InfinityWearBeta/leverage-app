@@ -10,14 +10,15 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
+  // --- STATO DEL WIDGET ---
   bool _isLoading = true;
   Map<String, dynamic>? _profile;
   List<dynamic> _investments = [];
   List<dynamic> _expenses = [];
 
-  // Metriche Calcolate
-  double _totalNetWorth = 0.0; // Tutto (Liquido + Bloccato)
-  double _liquidAssets = 0.0;  // Solo quello disponibile
+  // --- KPI FINANZIARI (Calcolati in Runtime) ---
+  double _totalNetWorth = 0.0; // Patrimonio Totale (Liquido + Bloccato)
+  double _liquidAssets = 0.0;  // Cash Flow Disponibile
   double _monthlyFixedBurn = 0.0; 
   double _freeCashFlow = 0.0;     
 
@@ -27,17 +28,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _fetchAllData();
   }
 
+  /// --------------------------------------------------------------------------
+  /// CORE: RECUPERO DATI E CALCOLO PATRIMONIALE
+  /// --------------------------------------------------------------------------
   Future<void> _fetchAllData() async {
     final userId = Supabase.instance.client.auth.currentUser?.id;
     if (userId == null) return;
 
     try {
-      final profile = await Supabase.instance.client.from('profiles').select().eq('id', userId).single();
-      final investments = await Supabase.instance.client.from('investments').select().eq('user_id', userId);
-      final expenses = await Supabase.instance.client.from('fixed_expenses').select().eq('user_id', userId).order('name', ascending: true);
+      // 1. Fetch Parallelo (FIX: <dynamic> aggiunto per gestire tipi misti)
+      final results = await Future.wait<dynamic>([
+        Supabase.instance.client.from('profiles').select().eq('id', userId).single(),
+        Supabase.instance.client.from('investments').select().eq('user_id', userId),
+        Supabase.instance.client.from('fixed_expenses').select().eq('user_id', userId).order('name', ascending: true)
+      ]);
 
-      // --- CALCOLI AVANZATI ---
-      
+      final profile = results[0] as Map<String, dynamic>;
+      final investments = results[1] as List<dynamic>;
+      final expenses = results[2] as List<dynamic>;
+
+      // 2. Analisi Investimenti (Liquido vs Bloccato)
       double totalInvested = 0.0;
       double lockedInvested = 0.0;
 
@@ -51,26 +61,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
       double currentSavings = (profile['current_savings'] as num?)?.toDouble() ?? 0.0;
       
-      // Calcolo Liquidità Reale (Risparmi + Investimenti NON bloccati)
+      // La Liquidità Reale esclude i fondi bloccati
       double liquidAssets = currentSavings + (totalInvested - lockedInvested);
-      
-      // Calcolo Patrimonio Totale (Inclusi i bloccati)
-      double totalNetWorth = currentSavings + totalInvested; // Nota: Non sommiamo la pensione qui se vuoi tenerla proprio a parte, ma tecnicamente è Net Worth.
+      double totalNetWorth = currentSavings + totalInvested;
 
-      // Burn Rate Mensile
+      // 3. Calcolo Burn Rate (Pessimistic Accounting)
       double monthlyBurn = 0.0;
       for (var item in expenses) {
         double amount = 0.0;
         if (item['is_variable'] == true) {
           double min = (item['min_amount'] as num?)?.toDouble() ?? 0.0;
           double max = (item['max_amount'] as num?)?.toDouble() ?? 0.0;
-          amount = (min + max) / 2;
+          amount = (min + max) / 2; // Media per il burn rate mensile
         } else {
           amount = (item['amount'] as num?)?.toDouble() ?? 0.0;
         }
         List<dynamic> months = item['payment_months'] ?? [];
         int paymentsPerYear = months.isNotEmpty ? months.length : 12; 
-        monthlyBurn += (amount * paymentsPerYear) / 12;
+        monthlyBurn += (amount * paymentsPerYear) / 12; // Normalizzazione mensile
       }
 
       double income = (profile['monthly_income'] as num?)?.toDouble() ?? 0.0;
@@ -94,7 +102,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  // --- AZIONI ---
+  // --- AZIONI UI (Modifica Campi Manuali) ---
 
   Future<void> _updateProfileField(String field, String label, String currentValue, {bool isText = false}) async {
     final controller = TextEditingController(text: currentValue.toString());
@@ -111,6 +119,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             labelText: "Nuovo valore",
             labelStyle: const TextStyle(color: Colors.grey),
             enabledBorder: const UnderlineInputBorder(borderSide: BorderSide(color: Color(0xFF00E676))),
+            focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: Color(0xFF00E676))),
           ),
         ),
         actions: [
@@ -122,7 +131,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 dynamic value = isText ? controller.text : (double.tryParse(controller.text) ?? 0.0);
                 await Supabase.instance.client.from('profiles').update({field: value}).eq('id', userId);
                 Navigator.pop(context);
-                _fetchAllData();
+                _fetchAllData(); // Ricarica per triggerare ricalcoli lato DB
               } catch (e) { print(e); }
             }, 
             child: const Text("Salva", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold))
@@ -132,19 +141,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  // --- MODAL INVESTIMENTO (CON CHECKBOX "BLOCCATO") ---
+  // --- MODAL DIALOGS ---
+
   void _showInvestmentDialog({Map<String, dynamic>? existingItem}) {
     final isEditing = existingItem != null;
     final nameCtrl = TextEditingController(text: existingItem?['name'] ?? '');
     final amountCtrl = TextEditingController(text: existingItem?['amount']?.toString() ?? '');
     String category = existingItem?['category'] ?? 'Azioni';
-    
-    // Nuovo Stato Locale per il Checkbox
     bool isLocked = existingItem?['is_locked'] ?? false;
 
     showDialog(
       context: context,
-      builder: (ctx) => StatefulBuilder( // StatefulBuilder serve per aggiornare il checkbox nel dialog
+      builder: (ctx) => StatefulBuilder(
         builder: (context, setDialogState) {
           return AlertDialog(
             backgroundColor: const Color(0xFF1E1E1E),
@@ -156,7 +164,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 TextField(controller: amountCtrl, keyboardType: TextInputType.number, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Valore (€)", labelStyle: TextStyle(color: Colors.grey))),
                 const SizedBox(height: 15),
                 DropdownButtonFormField<String>(
-                  initialValue: category,
+                  value: category, 
                   dropdownColor: const Color(0xFF1E1E1E),
                   style: const TextStyle(color: Colors.white),
                   items: ['Azioni', 'ETF', 'Obbligazioni', 'Crypto', 'Liquidità', 'Immobili', 'Pensione Integrativa', 'Altro'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
@@ -164,20 +172,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   decoration: const InputDecoration(labelText: "Categoria"),
                 ),
                 const SizedBox(height: 15),
-                
-                // SWITCH BLOCCATO
                 SwitchListTile(
                   title: const Text("Fondi Bloccati?", style: TextStyle(color: Colors.white, fontSize: 14)),
-                  subtitle: const Text("Attiva se non puoi prelevare questi soldi oggi (es. Vincolo, Staking, Pensione).", style: TextStyle(color: Colors.grey, fontSize: 10)),
+                  subtitle: const Text("Attiva se non puoi prelevare questi soldi oggi.", style: TextStyle(color: Colors.grey, fontSize: 10)),
                   value: isLocked,
-                  activeThumbColor: Colors.orangeAccent,
+                  activeColor: const Color(0xFF00E676),
                   contentPadding: EdgeInsets.zero,
                   onChanged: (val) => setDialogState(() => isLocked = val),
                 )
               ],
             ),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Annulla")),
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Annulla", style: TextStyle(color: Colors.white70))),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E676)),
                 onPressed: () async {
@@ -186,7 +192,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     'name': nameCtrl.text,
                     'amount': double.tryParse(amountCtrl.text.replaceAll(',', '.')) ?? 0.0,
                     'category': category,
-                    'is_locked': isLocked // Salviamo lo stato
+                    'is_locked': isLocked
                   };
                   
                   if (isEditing) {
@@ -197,7 +203,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   Navigator.pop(ctx);
                   _fetchAllData();
                 }, 
-                child: const Text("Salva", style: TextStyle(color: Colors.black))
+                child: const Text("Salva", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold))
               )
             ],
           );
@@ -235,6 +241,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (mounted) Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const LoginScreen()), (route) => false);
   }
 
+  // --- UI BUILDER ---
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) return const Center(child: CircularProgressIndicator(color: Color(0xFF00E676)));
@@ -255,7 +263,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // HEADER USER
+            // HEADER UTENTE
             Center(
               child: Column(
                 children: [
@@ -267,7 +275,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
             const SizedBox(height: 30),
 
-            // 1. DASHBOARD FLUSSO DI CASSA
+            // 1. CASH FLOW & PATRIMONIO
             _sectionHeader("SITUAZIONE ATTUALE", Icons.account_balance_wallet, const Color(0xFF00E676)),
             const SizedBox(height: 10),
             Container(
@@ -279,7 +287,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               child: Column(
                 children: [
-                  // Prima Riga: Liquidità vs Totale
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -295,7 +302,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ],
                   ),
                   const Divider(color: Colors.white10, height: 30),
-                  // Seconda Riga: Stipendio
                   _buildProfileTile("Stipendio Netto", "€ ${_profile?['monthly_income'] ?? 0}", Icons.attach_money, 
                     () => _updateProfileField('monthly_income', 'Stipendio (€)', (_profile?['monthly_income'] ?? 0).toString())),
                   _divider(),
@@ -307,7 +313,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
             const SizedBox(height: 30),
 
-            // 2. INVESTIMENTI (Con indicatore Bloccato)
+            // 2. INVESTIMENTI
             Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [_sectionTitle("Portafoglio Investimenti", Icons.pie_chart), IconButton(icon: const Icon(Icons.add_circle, color: Color(0xFF00E676)), onPressed: () => _showInvestmentDialog())]),
             if (_investments.isEmpty) const Text("Nessun investimento.", style: TextStyle(color: Colors.grey)),
             ..._investments.map((inv) => _investmentTile(inv)),
@@ -321,8 +327,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
             const SizedBox(height: 30),
 
-            // 4. BIOMETRIA
-            _sectionHeader("ASSETTO BIOMETRICO", Icons.accessibility_new, Colors.blueAccent),
+            // 4. BIOMETRIA (Sync Disabilitato per Stabilità)
+            _sectionHeader(
+              "ASSETTO BIOMETRICO", 
+              Icons.accessibility_new, 
+              Colors.blueAccent
+            ),
             const SizedBox(height: 10),
             Container(
               decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(16)),
@@ -332,7 +342,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   _divider(),
                   _buildProfileTile("Altezza", "${_profile?['height_cm'] ?? 0} cm", Icons.height, () => _updateProfileField('height_cm', 'Altezza (cm)', (_profile?['height_cm'] ?? 0).toString())),
                   _divider(),
-                  _buildProfileTile("Età", "$age Anni", Icons.cake, null), 
+                  _buildProfileTile("Età", "$age Anni", Icons.cake, null),
+                  _divider(),
+                  _buildProfileTile("Metabolismo (TDEE)", "${_profile?['tdee_kcal'] ?? '?'} Kcal", Icons.local_fire_department, null),
                 ],
               ),
             ),
@@ -344,8 +356,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  // WIDGET HELPER
+  // --- WIDGET HELPERS ---
+
   Widget _sectionHeader(String title, IconData icon, Color color) => Row(children: [Icon(icon, color: color, size: 18), const SizedBox(width: 8), Text(title, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5))]);
+
   Widget _sectionTitle(String title, IconData icon) => Row(children: [Icon(icon, color: Colors.grey, size: 20), const SizedBox(width: 8), Text(title, style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold))]);
   Widget _divider() => const Divider(color: Colors.white10, height: 1);
 
@@ -389,7 +403,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       freqText = "Mensile";
     } else if (months.length == 1) freqText = "Annuale";
     else if (months.isNotEmpty) freqText = "${months.length} pagamenti/anno";
-    else freqText = item['frequency'] ?? "Non specificato"; 
 
     return Card(
       color: const Color(0xFF1E1E1E),
@@ -409,8 +422,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 }
 
-// (La classe ExpenseForm rimane identica a quella che ti ho dato nel messaggio precedente,
-// ma per sicurezza la includo qui per avere un file unico funzionante)
+// -----------------------------------------------------------------------------
+// EXPENSE FORM (MODULO SPESE FISSE)
+// -----------------------------------------------------------------------------
 
 class ExpenseForm extends StatefulWidget {
   final Map<String, dynamic>? existingItem;
