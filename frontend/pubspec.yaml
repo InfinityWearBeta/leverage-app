@@ -31,8 +31,6 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   http: ^1.6.0
   supabase_flutter: ^2.10.3
@@ -40,9 +38,17 @@ dependencies:
   table_calendar: ^3.2.0
   intl: ^0.20.2
   fl_chart: ^1.1.1
-  health: ^13.2.1
+  
+  # --- DOWNGRADE: Usiamo la v10 che è stabile su Android 34 ---
+  health: ^10.0.0
+  # ------------------------------------------------------------
   permission_handler: ^11.3.0
 
+# --- AGGIUNGI QUESTA SEZIONE IN FONDO AL FILE ---
+# Serve a risolvere il conflitto di versioni tra 'health' vecchio e 'intl' nuovo
+dependency_overrides:
+  intl: ^0.20.2
+  
 dev_dependencies:
   flutter_test:
     sdk: flutter
