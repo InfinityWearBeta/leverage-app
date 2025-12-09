@@ -74,11 +74,21 @@ class SolvencyManager:
     def _is_bill_paid_in_current_cycle(self, expense_id: str, start_date: date) -> bool:
         """Controlla se la bolletta è già stata pagata in questo ciclo."""
         start_iso = start_date.isoformat()
+        # Parsing sicuro anche qui per le date di confronto
+        try:
+             start_date_obj = datetime.strptime(start_iso[:10], "%Y-%m-%d").date()
+        except:
+             return False
+
         for log in self.logs:
             if log.related_fixed_expense_id == expense_id:
-                # Confronto robusto sulle stringhe (solo YYYY-MM-DD)
-                if log.date[:10] >= start_iso[:10]:
-                    return True
+                try:
+                    log_date_obj = datetime.strptime(log.date[:10], "%Y-%m-%d").date()
+                    # Se il log è successivo o uguale all'inizio del ciclo, è pagata
+                    if log_date_obj >= start_date_obj:
+                        return True
+                except ValueError:
+                    continue
         return False
 
     def _calculate_weighted_days(self, target_date: date) -> float:
@@ -102,13 +112,16 @@ class SolvencyManager:
         pending_liabilities_max = 0.0
         projected_windfall = 0.0
 
-        # 1. CALCOLO FINANZIARIO (SDS)
+        # --- DEBUG LOGGING ---
+        print(f"--- CALCOLO START ---")
+        print(f"Log ricevuti: {len(self.logs)}")
+        
+        # 1. FINANZA (Logica SDS)
         for exp in self.expenses:
-            # Se la spesa non è prevista in questo mese, saltala
             if exp.payment_months and next_payday.month not in exp.payment_months:
                 continue
             
-            # SE È GIÀ PAGATA (check sui Log), NON SOTTRARLA DAL BUDGET FUTURO
+            # SE È GIÀ PAGATA, NON SOTTRARLA DAL BUDGET FUTURO
             if self._is_bill_paid_in_current_cycle(exp.id, start_cycle):
                 continue
 
@@ -119,37 +132,48 @@ class SolvencyManager:
                 pending_liabilities_max += exp.amount
 
         liquid = self.profile.current_liquid_balance
-        # Il Budget Giornaliero Sicuro (SDS)
         sds = (liquid - pending_liabilities_max) / weighted_days
         
         status = "SAFE"
         if sds < self.profile.preferences.min_viable_sds:
             status = "CRISIS_MANAGEMENT" 
-            if sds < 0: sds = 0.0 # Mai mostrare budget negativo, deprime l'utente.
+            if sds < 0: sds = 0.0
 
-        # 2. CALCOLO BIOLOGICO (SDC) - FIX LOGICA
+        # 2. BIOLOGIA (SDC) - FIX DATE & MATCHING
         consumed_today = 0
-        today_iso = self.today.isoformat() # es: 2023-10-27
+        today_date = self.today 
 
         for log in self.logs:
-            # Confrontiamo solo la parte data YYYY-MM-DD
-            if log.date[:10] == today_iso:
+            # FIX: Parsing robusto della data dal Log (ISO 8601)
+            try:
+                # Prende i primi 10 caratteri 'YYYY-MM-DD' e li converte
+                log_date_obj = datetime.strptime(log.date[:10], "%Y-%m-%d").date()
+            except ValueError:
+                continue 
+
+            # Confrontiamo le date (Oggetto vs Oggetto)
+            if log_date_obj == today_date:
+                print(f"Log di oggi trovato: {log.sub_type} - Type: {log.log_type}")
                 
-                # A. Calorie esplicite nel log
+                # A. Calorie esplicite
                 if log.calories > 0:
                     consumed_today += log.calories
                 
-                # B. Fallback: Calcolo basato sul vizio (se log.calories è 0)
-                elif log.log_type == 'vice_consumed' and log.sub_type:
-                    # Usiamo health.py per stimare
-                    impact = self.health_calc.calculate_health_impact(log.sub_type, 1) # Assumiamo qtà 1 se non spec.
-                    consumed_today += impact.get("daily_kcal_saved", 0) # Qui 'saved' è in realtà 'consumed' nel contesto negativo
+                # B. Fallback Vizio (Smart Matching)
+                elif (log.log_type == 'vice_consumed' or log.category == 'Vizio') and log.sub_type:
+                    # Chiamiamo il health calculator
+                    impact = self.health_calc.calculate_health_impact(log.sub_type, 1)
+                    k_val = impact.get("daily_kcal_saved", 0)
+                    print(f"Impatto calcolato per {log.sub_type}: {k_val}")
+                    consumed_today += k_val
 
         sdc = self.profile.tdee_kcal - consumed_today
+        print(f"SDC Finale: {sdc} (TDEE: {self.profile.tdee_kcal} - Consumed: {consumed_today})")
 
         return {
             "financial": {
                 "sds_today": round(sds, 2),
+                "current_liquid_balance": round(liquid, 2), # CAMPO AGGIUNTO PER IL FRONTEND
                 "status": status,
                 "projected_windfall": round(projected_windfall, 2),
                 "days_until_payday": int(weighted_days),
@@ -165,6 +189,6 @@ class SolvencyManager:
             "psychology": {
                 "vice_status": "UNLOCKED",
                 "unlock_cost_kcal": 0,
-                "message": "System v8.2 Bio-Active"
+                "message": f"Sys v8.4 | Logs Today: {consumed_today}kcal"
             }
         }
