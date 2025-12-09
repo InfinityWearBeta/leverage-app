@@ -7,8 +7,8 @@ plugins {
 android {
     namespace = "com.example.frontend"
     
-    // TORNIAMO ALLA VERSIONE STABILE
-    compileSdk = 34
+    // MODIFICA QUI: Da 34 a 36 (o 36 se continua a dare errore)
+    compileSdk = 36
     
     ndkVersion = flutter.ndkVersion
 
@@ -24,11 +24,11 @@ android {
     defaultConfig {
         applicationId = "com.example.frontend"
         
-        // MinSdk 26 è un ottimo standard moderno (Android 8.0)
+        // MinSdk resta 26 (ottimo)
         minSdk = 26
         
-        // Target 34 è lo standard attuale di Google Play
-        targetSdk = 34
+        // MODIFICA QUI: Da 35 a 36
+        targetSdk = 36
         
         versionCode = flutter.versionCode
         versionName = flutter.versionName

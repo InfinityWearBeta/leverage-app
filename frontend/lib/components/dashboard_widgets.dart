@@ -1,17 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
 
-// 1. WIDGET COCKPIT (La testata con i soldi)
+// 1. WIDGET COCKPIT (Aggiornato: Cash vs SDS)
 class SolvencyCockpit extends StatelessWidget {
-  final double sds;
+  final double sds;            // Safe Daily Spend
+  final double liquidCash;     // Cash Reale (Saldo)
   final String status;
-  final int sdc;
+  final int sdc;               // Calorie
   final int daysToPayday;
   final double pendingBills;
+  final VoidCallback onInfoTap; // Callback per il popup info
 
   const SolvencyCockpit({
     super.key, 
-    required this.sds, required this.status, required this.sdc, required this.daysToPayday, required this.pendingBills
+    required this.sds, 
+    required this.liquidCash,
+    required this.status, 
+    required this.sdc, 
+    required this.daysToPayday, 
+    required this.pendingBills,
+    required this.onInfoTap,
   });
 
   @override
@@ -30,10 +38,20 @@ class SolvencyCockpit extends StatelessWidget {
       ),
       child: Column(
         children: [
+          // Header: Titolo + Info + Status
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text("BUDGET SICURO (SDS)", style: TextStyle(color: Colors.white70, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1)),
+              Row(
+                children: [
+                  const Text("SOLVIBILITÀ", style: TextStyle(color: Colors.white70, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                  const SizedBox(width: 8),
+                  GestureDetector(
+                    onTap: onInfoTap,
+                    child: const Icon(Icons.info_outline, color: Colors.white30, size: 16),
+                  )
+                ],
+              ),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(color: statusColor.withOpacity(0.2), borderRadius: BorderRadius.circular(8)),
@@ -41,30 +59,48 @@ class SolvencyCockpit extends StatelessWidget {
               )
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 15),
+          
+          // BODY: Due Colonne (Budget vs Cash)
           Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Text("€ ${sds.toStringAsFixed(2)}", style: TextStyle(color: statusColor, fontSize: 40, fontWeight: FontWeight.w900)),
+              // Colonna SX: SDS (Budget Giornaliero)
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text("€ ${sds.toStringAsFixed(2)}", style: TextStyle(color: statusColor, fontSize: 32, fontWeight: FontWeight.w900)),
+                  const Text("Budget / Giorno", style: TextStyle(color: Colors.white54, fontSize: 10)),
+                ],
+              ),
+              // Separatore Verticale
+              Container(width: 1, height: 40, color: Colors.white10),
+              // Colonna DX: Cash Reale
               Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  const Icon(Icons.bolt, color: Colors.blueAccent, size: 24),
-                  Text("$sdc Kcal", style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
-                  const Text("Residue", style: TextStyle(color: Colors.grey, fontSize: 10)),
+                  Text("€ ${liquidCash.toStringAsFixed(0)}", style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+                  const Text("Cash Reale", style: TextStyle(color: Colors.grey, fontSize: 10)),
                 ],
               )
             ],
           ),
+          
           const SizedBox(height: 15),
           ClipRRect(borderRadius: BorderRadius.circular(2), child: LinearProgressIndicator(value: 1.0, backgroundColor: Colors.white10, color: statusColor, minHeight: 4)),
           const SizedBox(height: 10),
+          
+          // Footer: Calorie e Bollette
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text("Bollette: € ${pendingBills.toStringAsFixed(0)}", style: const TextStyle(color: Colors.redAccent, fontSize: 10)),
-              Text("Payday: $daysToPayday gg", style: const TextStyle(color: Colors.grey, fontSize: 10)),
+              Row(children: [
+                 const Icon(Icons.bolt, color: Colors.blueAccent, size: 14),
+                 const SizedBox(width: 4),
+                 Text("$sdc Kcal", style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+              ]),
+              Text("Bollette Future: -€${pendingBills.toStringAsFixed(0)}", style: const TextStyle(color: Colors.redAccent, fontSize: 11)),
             ],
           )
         ],
@@ -73,7 +109,7 @@ class SolvencyCockpit extends StatelessWidget {
   }
 }
 
-// 2. WIDGET CALENDARIO
+// 2. WIDGET CALENDARIO (Invariato)
 class CalendarWidget extends StatelessWidget {
   final DateTime focusedDay;
   final DateTime selectedDay;
@@ -107,7 +143,7 @@ class CalendarWidget extends StatelessWidget {
   }
 }
 
-// 3. CARD LOG
+// 3. CARD LOG (Invariato)
 class LogCard extends StatelessWidget {
   final Map<String, dynamic> log;
   final Function(String) onDelete;
@@ -119,13 +155,11 @@ class LogCard extends StatelessWidget {
     IconData icon = Icons.circle; Color color = Colors.grey; String title = "Attività"; String subtitle = "";
     
     if (log['log_type'] == 'vice_consumed') {
-      icon = Icons.warning_amber_rounded; color = Colors.orangeAccent; title = "${log['sub_type']}"; subtitle = "Registrato";
-    } else if (log['log_type'] == 'vice_avoided') {
-      icon = Icons.check_circle; color = const Color(0xFF00E676); title = "${log['sub_type']}"; subtitle = "Vittoria";
+      icon = Icons.warning_amber_rounded; color = Colors.orangeAccent; title = "${log['sub_type'] ?? 'Vizio'}"; subtitle = "Consumato";
     } else if (log['log_type'] == 'expense') {
-      icon = Icons.money_off; color = Colors.redAccent; title = "${log['category']}"; subtitle = "- €${log['amount_saved']}";
+      icon = Icons.money_off; color = Colors.redAccent; title = "${log['category'] ?? 'Spesa'}"; subtitle = "- €${log['amount_saved']}";
     } else if (log['log_type'] == 'workout') {
-      icon = Icons.fitness_center; color = Colors.blueAccent; title = "${log['sub_type']}"; subtitle = "Sport";
+      icon = Icons.fitness_center; color = Colors.blueAccent; title = "${log['sub_type'] ?? 'Sport'}"; subtitle = "Allenamento";
     }
 
     return Card(
