@@ -3,6 +3,9 @@ from dateutil.relativedelta import relativedelta
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 
+# Importiamo il calcolatore di salute per stimare le calorie dei vizi
+from core.health import HealthCalculator 
+
 # --- MODELLI DATI (DTO) ---
 
 class ProfilePreferences(BaseModel):
@@ -35,7 +38,8 @@ class DailyLog(BaseModel):
     amount: float = 0.0
     calories: int = 0
     category: Optional[str] = None 
-    related_fixed_expense_id: Optional[str] = None # CRUCIALE: Il link al pagamento
+    sub_type: Optional[str] = None # Fondamentale per identificare il vizio (es. "Birra")
+    related_fixed_expense_id: Optional[str] = None 
 
 # --- MOTORE LOGICO ---
 
@@ -45,12 +49,14 @@ class SolvencyManager:
         self.expenses = expenses
         self.logs = logs
         self.today = date.today()
+        self.health_calc = HealthCalculator() # Istanziamo il calcolatore
 
     def _get_payday_cycle(self) -> tuple[date, date]:
         """Trova inizio e fine del mese fiscale dell'utente."""
         try:
             candidate_next = self.today.replace(day=self.profile.payday_day)
         except ValueError:
+            # Gestione mesi corti (es. Febbraio non ha il 30)
             candidate_next = self.today + relativedelta(day=31)
 
         if candidate_next > self.today:
@@ -70,7 +76,8 @@ class SolvencyManager:
         start_iso = start_date.isoformat()
         for log in self.logs:
             if log.related_fixed_expense_id == expense_id:
-                if log.date >= start_iso:
+                # Confronto robusto sulle stringhe (solo YYYY-MM-DD)
+                if log.date[:10] >= start_iso[:10]:
                     return True
         return False
 
@@ -95,11 +102,13 @@ class SolvencyManager:
         pending_liabilities_max = 0.0
         projected_windfall = 0.0
 
+        # 1. CALCOLO FINANZIARIO (SDS)
         for exp in self.expenses:
+            # Se la spesa non è prevista in questo mese, saltala
             if exp.payment_months and next_payday.month not in exp.payment_months:
                 continue
             
-            # SE È GIÀ PAGATA, NON SOTTRARLA DAL BUDGET FUTURO
+            # SE È GIÀ PAGATA (check sui Log), NON SOTTRARLA DAL BUDGET FUTURO
             if self._is_bill_paid_in_current_cycle(exp.id, start_cycle):
                 continue
 
@@ -110,19 +119,31 @@ class SolvencyManager:
                 pending_liabilities_max += exp.amount
 
         liquid = self.profile.current_liquid_balance
+        # Il Budget Giornaliero Sicuro (SDS)
         sds = (liquid - pending_liabilities_max) / weighted_days
         
         status = "SAFE"
         if sds < self.profile.preferences.min_viable_sds:
-            status = "CRISIS_MANAGEMENT" # Qui potremmo attivare logica fallback
-            if sds < 0: sds = 0.0
+            status = "CRISIS_MANAGEMENT" 
+            if sds < 0: sds = 0.0 # Mai mostrare budget negativo, deprime l'utente.
 
-        # Bio Logic (Semplificata per focus)
+        # 2. CALCOLO BIOLOGICO (SDC) - FIX LOGICA
         consumed_today = 0
-        today_iso = self.today.isoformat()
+        today_iso = self.today.isoformat() # es: 2023-10-27
+
         for log in self.logs:
-            if log.date.startswith(today_iso):
-                consumed_today += 0 # Placeholder calorie
+            # Confrontiamo solo la parte data YYYY-MM-DD
+            if log.date[:10] == today_iso:
+                
+                # A. Calorie esplicite nel log
+                if log.calories > 0:
+                    consumed_today += log.calories
+                
+                # B. Fallback: Calcolo basato sul vizio (se log.calories è 0)
+                elif log.log_type == 'vice_consumed' and log.sub_type:
+                    # Usiamo health.py per stimare
+                    impact = self.health_calc.calculate_health_impact(log.sub_type, 1) # Assumiamo qtà 1 se non spec.
+                    consumed_today += impact.get("daily_kcal_saved", 0) # Qui 'saved' è in realtà 'consumed' nel contesto negativo
 
         sdc = self.profile.tdee_kcal - consumed_today
 
@@ -136,6 +157,7 @@ class SolvencyManager:
             },
             "biological": {
                 "sdc_remaining": int(sdc),
+                "consumed_today": int(consumed_today),
                 "sugar_tax_paid_today": 0,
                 "workout_credits": 0,
                 "tdee_base": self.profile.tdee_kcal
@@ -143,6 +165,6 @@ class SolvencyManager:
             "psychology": {
                 "vice_status": "UNLOCKED",
                 "unlock_cost_kcal": 0,
-                "message": "System v8.1 Operational"
+                "message": "System v8.2 Bio-Active"
             }
         }
